@@ -24,7 +24,8 @@ class CanvasAPI:
         assignments = []
         for course in self.get_courses():
             try:
-                logger.info(f"Processing course: {course.name}")
+                course_name=getattr(course, 'name', 'Unnamed Course')
+                logger.info(f"Processing course: {course_name}")
                 course_assignments = course.get_assignments()
 
                 for assignment in course_assignments:
@@ -38,19 +39,19 @@ class CanvasAPI:
                                     logger.warning(f"Could not fetch submission for assignment {assignment.name}: {str(e)}")
                             
                             assignments.append(Assignment(
-                                id=assignment.id,
-                                name=assignment.name,
-                                description=assignment.description,
-                                due_date=assignment.due_at,
-                                course_id=course.id,
-                                course_name=course.name,
+                                id=getattr(assignment, 'id', None),
+                                name=getattr(assignment, 'name', 'Unnamed Assignment'),
+                                description=getattr(assignment, 'description', ''),
+                                due_date=getattr(assignment, 'due_at', None),
+                                course_id=getattr(course, 'id', None),
+                                course_name=getattr(course, 'name', 'Unnamed Course'),
                                 status="submitted" if submission else "not_started",
-                                grade=submission.grade if submission else None
+                                grade=getattr(submission, 'grade', None) if submission else None
                             ))
                     except Exception as e:
                         logger.warning(f"Skipping assignment {assignment.name} due to error: {str(e)}")
                         continue
                         
             except Exception as e:
-                logger.error(f"Skipping {course.name} due to error: {str(e)}")
+                logger.error(f"Skipping {getattr(course, 'name', f'Course {course.id}')} due to error: {str(e)}")
         return assignments
