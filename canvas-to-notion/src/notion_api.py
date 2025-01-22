@@ -166,6 +166,11 @@ class NotionAPI:
 
             if existing_page:
                 logger.info(f"Updating assignment: {assignment.name}")
+                # Get current status from existing page
+                current_status = existing_page["properties"]["Status"]["status"]["name"]
+                if current_status == "Dont show":
+                    logger.info(f"Skipping update for {assignment.name} due to 'Dont show' status")
+                    return
                 self.notion.pages.update(
                     page_id=existing_page["id"],
                     properties=properties

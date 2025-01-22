@@ -1,7 +1,13 @@
+# Core dependencies
 schedule==1.2.0
-appdirs==1.4.4
 canvasapi==3.2.0
 notion-client==2.0.0
 python-dotenv==1.0.0
 requests>=2.32.2
 beautifulsoup4==4.12.3
+appdirs==1.4.4
+
+# Additional dependencies from imports
+pytz>=2024.1
+typing-extensions>=4.9.0
+python-dateutil>=2.8.2
