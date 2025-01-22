@@ -10,4 +10,4 @@ NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 COURSE_DATABASE_ID = os.getenv('COURSE_DATABASE_ID')
 
 # Sync interval in seconds
-SYNC_INTERVAL = 900  # 15 minutes
+SYNC_INTERVAL = 300  # 5 minutes
