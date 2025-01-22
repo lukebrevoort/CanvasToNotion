@@ -85,15 +85,23 @@ class NotionAPI:
         if not date_str:
             return None
         if isinstance(date_str, datetime):
-            return date_str
-        try:
-            if 'Z' in date_str:
-                date_str = date_str.replace('Z', '+00:00')
-            parsed_date = datetime.fromisoformat(date_str)
-            return parsed_date.astimezone(pytz.UTC)
-        except ValueError as e:
-            logger.warning(f"Could not parse date: {date_str}. Error: {e}")
-            return None
+            dt = date_str
+        else:
+            try:
+                if 'Z' in date_str:
+                    date_str = date_str.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(date_str)
+            except ValueError as e:
+                logger.warning(f"Could not parse date: {date_str}. Error: {e}")
+                return None
+
+        dt = dt.astimezone(pytz.timezone('US/Eastern'))
+        
+        # If time is 11:59 PM/AM, return date only
+        if dt.hour == 23 and dt.minute == 59:
+            return dt.date()
+            
+        return dt
 
     def get_assignment_page(self, assignment_id: int):
         """Fetch existing assignment page from Notion"""
