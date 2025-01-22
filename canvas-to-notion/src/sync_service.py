@@ -1,9 +1,9 @@
 import time
 import schedule
 from datetime import datetime
-from .canvas_api import CanvasAPI
-from .notion_api import NotionAPI
-from .utils.config import SYNC_INTERVAL
+from canvas_api import CanvasAPI
+from notion_api import NotionAPI
+from utils.config import SYNC_INTERVAL
 import logging
 
 logging.basicConfig(level=logging.INFO)

@@ -1,8 +1,8 @@
 from canvasapi import Canvas
 from datetime import datetime
 from typing import List
-from .models.assignment import Assignment
-from .utils.config import CANVAS_URL, CANVAS_TOKEN
+from models.assignment import Assignment
+from utils.config import CANVAS_URL, CANVAS_TOKEN
 import logging
 logger = logging.getLogger(__name__)
 

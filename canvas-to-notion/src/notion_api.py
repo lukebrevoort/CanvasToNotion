@@ -2,8 +2,8 @@ from notion_client import Client
 from datetime import datetime
 import pytz
 from typing import Dict, Optional
-from .models.assignment import Assignment
-from .utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID
+from models.assignment import Assignment
+from utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID
 from bs4 import BeautifulSoup
 import re
 import logging
