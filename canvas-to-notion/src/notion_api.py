@@ -4,6 +4,8 @@ import pytz
 from typing import Dict, Optional
 from .models.assignment import Assignment
 from .utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID
+from bs4 import BeautifulSoup
+import re
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,16 +26,59 @@ class NotionAPI:
             )
             
             mapping = {}
-            for page in response.get('results', []):
-                canvas_id = page['properties'].get('CourseID', {}).get('number')
-                if canvas_id:
-                    mapping[str(canvas_id)] = page['id']
             
-            logger.info(f"Loaded {len(mapping)} course mappings")
+            # Debug full response
+            logger.debug(f"Full response: {response}")
+            
+            for page in response['results']:
+                try:
+                    # Get page ID and properties
+                    notion_uuid = page['id']
+                    properties = page['properties']
+                    
+                    # Debug properties
+                    logger.debug(f"Page {notion_uuid} properties: {properties}")
+                    
+                    # Access multi-select values directly
+                    canvas_ids = properties['CourseID']['multi_select']
+                    logger.debug(f"Canvas IDs found: {canvas_ids}")
+                    
+                    # Map each selected value to this page
+                    for item in canvas_ids:
+                        canvas_id = item['name']  # Direct access to name
+                        logger.info(f"Mapping Canvas ID {canvas_id} to page {notion_uuid}")
+                        mapping[str(canvas_id)] = notion_uuid
+                
+                except KeyError as e:
+                    logger.error(f"Missing property in page {page.get('id')}: {e}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing page {page.get('id')}: {e}")
+                    continue
+            
+            logger.info(f"Final mappings: {mapping}")
             return mapping
+            
         except Exception as e:
-            logger.error(f"Failed to get course mapping: {str(e)}")
+            logger.error(f"Failed to get course mapping: {e}")
             return {}
+        
+    def _clean_html(self, html_content: str) -> str:
+        """Clean HTML content and return plain text"""
+        if not html_content:
+            return ""
+        try:
+            # Parse HTML and get text
+            soup = BeautifulSoup(html_content, 'html.parser')
+            text = soup.get_text()
+            
+            # Clean up whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return text[:2000]  # Notion's limit
+        except Exception as e:
+            logger.warning(f"Error cleaning HTML content: {e}")
+            return html_content[:2000]
 
     def _parse_date(self, date_str) -> Optional[datetime]:
         """Helper to parse dates from various formats"""
@@ -62,6 +107,7 @@ class NotionAPI:
             )
             results = response.get('results', [])
             return results[0] if results else None
+            
         except Exception as e:
             logger.error(f"Error fetching assignment {assignment_id} from Notion: {str(e)}")
             return None
@@ -71,34 +117,44 @@ class NotionAPI:
         try:
             existing_page = self.get_assignment_page(assignment.id)
             
-            # Get Notion UUID for course
-            course_uuid = self.course_mapping.get(str(assignment.course_id))
+            # Convert course_id to string and look up UUID
+            course_id_str = str(assignment.course_id)
+            course_uuid = self.course_mapping.get(course_id_str)
+            
+            # Log course mapping attempt
+            logger.debug(f"Looking up course {course_id_str} in mapping: {self.course_mapping}")
+
+            
             if not course_uuid:
-                logger.warning(f"No Notion UUID found for course {assignment.course_id}")
+                logger.warning(f"No Notion UUID found for course {course_id_str}")
                 return
             
             # Parse due date
             due_date = self._parse_date(assignment.due_date)
             
-            # Prepare properties with proper type handling
+            # Prepare properties
             properties = {
                 "Assignment Title": {"title": [{"text": {"content": str(assignment.name)}}]},
                 "AssignmentID": {"number": int(assignment.id)},
-                "Description": {"rich_text": [{"text": {"content": str(assignment.description)[:2000] if assignment.description else ""}}]},
+                "Description": {"rich_text": [{"text": {"content": self._clean_html(assignment.description)}}]},
                 "Course": {"relation": [{"id": course_uuid}]},
                 "Status": {"status": {"name": str(assignment.status)}}
             }
             
-            # Only add due date if valid
             if due_date:
                 properties["Due Date"] = {"date": {"start": due_date.isoformat()}}
             
-            # Only add grade if present
             if assignment.grade is not None:
                 try:
                     properties["Grade (%)"] = {"number": float(assignment.grade)}
                 except (ValueError, TypeError):
                     logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
+                    # Also set Mark as property
+                    if assignment.mark is not None:
+                        try:
+                            properties["Status"] = {"status": "Mark received"}
+                        except (ValueError, TypeError):
+                            logger.warning(f"Invalid mark format for assignment {assignment.name}: {assignment.mark}")
 
             if existing_page:
                 logger.info(f"Updating assignment: {assignment.name}")

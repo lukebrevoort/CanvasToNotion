@@ -24,6 +24,11 @@ class CanvasAPI:
         assignments = []
         for course in self.get_courses():
             try:
+
+                term_id = getattr(course, 'enrollment_term_id', None)
+                if term_id != 449:  # Spring 2024 term
+                    logger.info(f"Skipping course {getattr(course, 'name', course.id)} - not in current term")
+                    continue
                 course_name=getattr(course, 'name', 'Unnamed Course')
                 logger.info(f"Processing course: {course_name}")
                 course_assignments = course.get_assignments()
@@ -45,7 +50,7 @@ class CanvasAPI:
                                 due_date=getattr(assignment, 'due_at', None),
                                 course_id=getattr(course, 'id', None),
                                 course_name=getattr(course, 'name', 'Unnamed Course'),
-                                status="submitted" if submission else "not_started",
+                                status="Submitted" if submission else "Not started",
                                 grade=getattr(submission, 'grade', None) if submission else None
                             ))
                     except Exception as e:

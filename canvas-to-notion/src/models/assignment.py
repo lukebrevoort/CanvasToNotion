@@ -10,5 +10,5 @@ class Assignment:
     due_date: datetime
     course_id: int
     course_name: str
-    status: str = "not_started"
+    status: str = "Not started"
     grade: Optional[float] = None

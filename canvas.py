@@ -23,12 +23,8 @@ for course in courses:
         
         print(f"Course Details:\n"
               f"  ID: {course.id}\n"
-              f"  Code: {course_code}\n"
               f"  Name: {name}\n"
-              f"  Original Name: {original_name}\n"
-              f"  Status: {workflow_state}\n"
-              f"  Term ID: {term_id}\n"
-              f"  Created: {created_at}\n")
+              f"  Term ID: {term_id}")
     except AttributeError as e:
         print(f"Error accessing course {course.id}: {str(e)}")
 
