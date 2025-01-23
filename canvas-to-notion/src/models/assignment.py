@@ -12,3 +12,5 @@ class Assignment:
     course_name: str
     status: str = "Not started"
     grade: Optional[float] = None
+    group_name: Optional[str] = None
+    group_weight: Optional[float] = None

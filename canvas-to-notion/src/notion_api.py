@@ -146,8 +146,12 @@ class NotionAPI:
                 "AssignmentID": {"number": int(assignment.id)},
                 "Description": {"rich_text": [{"text": {"content": self._clean_html(assignment.description)}}]},
                 "Course": {"relation": [{"id": course_uuid}]},
-                "Status": {"status": {"name": str(assignment.status)}}
+                "Status": {"status": {"name": str(assignment.status)}},
+                "Assignment Group": {"select": {"name": assignment.group_name}} if assignment.group_name else None,
+                "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None
             }
+
+            properties = {k: v for k, v in properties.items() if v is not None}
             
             if due_date:
                 properties["Due Date"] = {"date": {"start": due_date.isoformat()}}

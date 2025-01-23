@@ -29,3 +29,9 @@ for course in courses:
         print(f"Error accessing course {course.id}: {str(e)}")
 
 
+for course in courses:
+    if course.course_code == "79068":
+        print(f"Found course: {course.name}")
+        break
+
+
