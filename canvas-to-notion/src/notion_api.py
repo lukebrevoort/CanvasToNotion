@@ -7,20 +7,44 @@ from utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID
 from bs4 import BeautifulSoup
 import re
 import logging
+import backoff
+from ratelimit import limits, sleep_and_retry
 
 logger = logging.getLogger(__name__)
 
 class NotionAPI:
+    ONE_SECOND = 1
+    MAX_REQUESTS_PER_SECOND = 3
+
     def __init__(self):
         self.notion = Client(auth=NOTION_TOKEN)
         self.database_id = NOTION_DATABASE_ID
         self.course_db_id = COURSE_DATABASE_ID
         self.course_mapping = self._get_course_mapping()
 
+    @sleep_and_retry
+    @limits(calls=MAX_REQUESTS_PER_SECOND, period=ONE_SECOND)
+    @backoff.on_exception(
+        backoff.expo,
+        Exception,
+        max_tries=5
+    )
+
+    def _make_notion_request(self, operation_type: str, **kwargs):
+        """Wrapper for Notion API calls with rate limiting"""
+        if operation_type == "query_database":
+            return self.notion.databases.query(**kwargs)
+        elif operation_type == "update_page":
+            return self.notion.pages.update(**kwargs)
+        elif operation_type == "create_page":
+            return self.notion.pages.create(**kwargs)
+        raise ValueError(f"Unknown operation type: {operation_type}")
+
     def _get_course_mapping(self) -> Dict[str, str]:
         """Create mapping of Canvas course IDs to Notion page UUIDs"""
         try:
-            response = self.notion.databases.query(
+            response = self._make_notion_request(
+                "query_database",
                 database_id=self.course_db_id,
                 page_size=100
             )
@@ -181,13 +205,15 @@ class NotionAPI:
                     # Remove status from properties to keep existing status
                     properties.pop("Status", None)
 
-                self.notion.pages.update(
+                self._make_notion_request(
+                    "update_page",
                     page_id=existing_page["id"],
                     properties=properties
                 )
             else:
                 logger.info(f"Creating new assignment: {assignment.name}")
-                self.notion.pages.create(
+                self._make_notion_request(
+                    "create_page",
                     parent={"database_id": self.database_id},
                     properties=properties
                 )
