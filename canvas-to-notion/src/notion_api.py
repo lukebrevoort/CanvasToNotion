@@ -175,6 +175,12 @@ class NotionAPI:
                 if current_status == "Dont show":
                     logger.info(f"Skipping update for {assignment.name} due to 'Dont show' status")
                     return
+                #If current_status is manually put In progress, preserve it and update else
+                if current_status == "In progress":
+                    logger.info(f"Preserving 'In progress' status for {assignment.name}")
+                    # Remove status from properties to keep existing status
+                    properties.pop("Status", None)
+
                 self.notion.pages.update(
                     page_id=existing_page["id"],
                     properties=properties
