@@ -14,3 +14,4 @@ class Assignment:
     grade: Optional[float] = None
     group_name: Optional[str] = None
     group_weight: Optional[float] = None
+    priority: Optional[str] = "Low"

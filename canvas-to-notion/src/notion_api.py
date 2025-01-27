@@ -165,6 +165,10 @@ class NotionAPI:
             due_date = self._parse_date(assignment.due_date)
             
             # Prepare properties
+            # Define valid priority options
+            VALID_PRIORITIES = ["Low", "Medium", "High"]
+            
+            # Prepare properties
             properties = {
                 "Assignment Title": {"title": [{"text": {"content": str(assignment.name)}}]},
                 "AssignmentID": {"number": int(assignment.id)},
@@ -172,8 +176,14 @@ class NotionAPI:
                 "Course": {"relation": [{"id": course_uuid}]},
                 "Status": {"status": {"name": str(assignment.status)}},
                 "Assignment Group": {"select": {"name": assignment.group_name}} if assignment.group_name else None,
-                "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None
+                "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None,
             }
+
+            # Only add Priority if it's a valid value
+            if assignment.priority in VALID_PRIORITIES:
+                properties["Priority"] = {"select": {"name": assignment.priority}}
+            else:
+                properties["Priority"] = {"select": {"name": "Low"}}  # Default to Low if invalid/None
 
             properties = {k: v for k, v in properties.items() if v is not None}
             

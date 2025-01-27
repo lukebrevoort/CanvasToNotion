@@ -130,6 +130,15 @@ class CanvasAPI:
                             group_info = group_weights.get(group_id, {})
                             group_name = group_info.get('name')
                             group_weight = group_info.get('weight')
+
+                            priority = None
+                            if group_weight is not None:
+                                if group_weight <= 0.10:
+                                    priority = "Low"
+                                elif group_weight <= 0.20:
+                                    priority = "Medium" 
+                                else:
+                                    priority = "High"
                             
                             assignments.append(Assignment(
                                 id=getattr(assignment, 'id', None),
@@ -141,7 +150,8 @@ class CanvasAPI:
                                 status=status,
                                 grade=grade,
                                 group_name=group_name,
-                                group_weight=group_weight
+                                group_weight=group_weight,
+                                priority=priority
                             ))
                             
                     except Exception as e:
