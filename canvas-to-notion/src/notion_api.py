@@ -12,7 +12,15 @@ from ratelimit import limits, sleep_and_retry
 
 logger = logging.getLogger(__name__)
 
+# NotionAPI: Handles integration between Canvas assignments and Notion database
+# Manages rate limiting, error handling, and data transformation
+
 class NotionAPI:
+    """
+    Manages interaction with Notion API for syncing Canvas assignments.
+    Handles rate limiting, retries, and data transformation.
+    """
+    
     ONE_SECOND = 1
     MAX_REQUESTS_PER_SECOND = 3
 
@@ -29,9 +37,20 @@ class NotionAPI:
         Exception,
         max_tries=5
     )
-
     def _make_notion_request(self, operation_type: str, **kwargs):
-        """Wrapper for Notion API calls with rate limiting"""
+        """
+        Rate-limited wrapper for Notion API calls with exponential backoff.
+        
+        Args:
+            operation_type: Type of Notion operation ('query_database', 'update_page', 'create_page')
+            **kwargs: Arguments passed to the Notion API call
+        
+        Returns:
+            Response from Notion API
+        
+        Raises:
+            ValueError: If operation_type is invalid
+        """
         if operation_type == "query_database":
             return self.notion.databases.query(**kwargs)
         elif operation_type == "update_page":
@@ -41,7 +60,12 @@ class NotionAPI:
         raise ValueError(f"Unknown operation type: {operation_type}")
 
     def _get_course_mapping(self) -> Dict[str, str]:
-        """Create mapping of Canvas course IDs to Notion page UUIDs"""
+        """
+        Maps Canvas course IDs to Notion page UUIDs from the course database.
+        
+        Returns:
+            Dict mapping Canvas course IDs (str) to Notion page UUIDs (str)
+        """
         try:
             response = self._make_notion_request(
                 "query_database",
@@ -88,7 +112,15 @@ class NotionAPI:
             return {}
         
     def _clean_html(self, html_content: str) -> str:
-        """Clean HTML content and return plain text"""
+        """
+        Converts HTML content to plain text and truncates to Notion's 2000 char limit.
+        
+        Args:
+            html_content: HTML string to clean
+        
+        Returns:
+            Cleaned and truncated plain text
+        """
         if not html_content:
             return ""
         try:
@@ -105,7 +137,16 @@ class NotionAPI:
             return html_content[:2000]
 
     def _parse_date(self, date_str) -> Optional[datetime]:
-        """Helper to parse dates from various formats"""
+        """
+        Parses dates from various formats and converts to US/Eastern timezone.
+        Special handling for 11:59 PM/AM dates to return date-only.
+        
+        Args:
+            date_str: Date string or datetime object
+        
+        Returns:
+            Parsed datetime in US/Eastern timezone, or None if parsing fails
+        """
         if not date_str:
             return None
         if isinstance(date_str, datetime):
@@ -128,7 +169,15 @@ class NotionAPI:
         return dt
 
     def get_assignment_page(self, assignment_id: int):
-        """Fetch existing assignment page from Notion"""
+        """
+        Retrieves existing assignment page from Notion by Canvas assignment ID.
+        
+        Args:
+            assignment_id: Canvas assignment ID
+        
+        Returns:
+            Notion page object if found, None otherwise
+        """
         try:
             response = self.notion.databases.query(
                 database_id=self.database_id,
@@ -145,7 +194,17 @@ class NotionAPI:
             return None
 
     def create_or_update_assignment(self, assignment: Assignment):
-        """Create or update assignment in Notion"""
+        """
+        Creates new or updates existing assignment in Notion database.
+        Handles status preservation for manually set "In progress" items.
+        Respects "Dont show" flag to prevent updates.
+        
+        Args:
+            assignment: Assignment object containing Canvas assignment data
+        
+        Raises:
+            Exception: If Notion API call fails
+        """
         try:
             existing_page = self.get_assignment_page(assignment.id)
             

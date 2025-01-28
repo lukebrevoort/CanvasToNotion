@@ -12,8 +12,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# CanvasAPI: Handles Canvas LMS integration with retry logic and assignment processing
+# Manages course filtering, assignment group weights, and submission status
+
 class CanvasAPI:
+    """
+    Manages interaction with Canvas LMS API.
+    Handles authentication, retry logic, and data transformation.
+    """
+
     def __init__(self):
+        """
+        Initializes Canvas API client with retry strategy for robust operation.
+        Configures automatic retries for common HTTP errors and rate limits.
+        """
         # Configure retry strategy
         retry_strategy = Retry(
             total=5,
@@ -37,6 +49,7 @@ class CanvasAPI:
         max_tries=5
     )
     def get_courses(self):
+        """Fetches all available courses for the authenticated user."""
         return self.canvas.get_courses()
     
     @backoff.on_exception(
@@ -45,11 +58,20 @@ class CanvasAPI:
         max_tries=5
     )
     def _get_user_id(self):
+        """Retrieves current user's Canvas ID for submission lookups."""
         user = self.canvas.get_current_user()
         return user.id
     
     def _get_assignment_group_weights(self, course):
-        """Get assignment group weights for a course"""
+        """
+        Fetches assignment group weights for grade calculation.
+        
+        Args:
+            course: Canvas course object
+            
+        Returns:
+            Dict mapping group IDs to their names and weights
+        """
         try:
             groups = course.get_assignment_groups()
             return {
@@ -70,6 +92,21 @@ class CanvasAPI:
         max_time=300
     )
     def get_updated_assignments(self, last_sync: datetime = None) -> List[Assignment]:
+        """
+        Retrieves assignments updated since last sync.
+        
+        Features:
+        - Filters for current term (Spring 2024)
+        - Processes submission status and grades
+        - Calculates priority based on group weights
+        - Handles timezone conversion
+        
+        Args:
+            last_sync: Optional datetime of last successful sync
+            
+        Returns:
+            List of Assignment objects with updated information
+        """
         # Convert last_sync to timezone-aware if it isn't already
         if last_sync and last_sync.tzinfo is None:
             last_sync = last_sync.replace(tzinfo=pytz.UTC)

@@ -1,31 +1,44 @@
 # Canvas to Notion Assignment Sync
 
-This project automates the transfer of new assignments from Canvas to a Notion database, updating the Notion database with assignment details and statuses based on changes in Canvas.
+An automated system that seamlessly syncs Canvas assignments to a Notion database, running automatically on system startup via launchctl on macOS.
 
 ## Overview
 
-The application connects to the Canvas API to retrieve assignment data and updates a Notion database accordingly. It ensures that any new or updated assignments in Canvas are reflected in Notion, allowing for seamless management of academic tasks.
+This application monitors Canvas for new assignments and updates a Notion database in real-time. It maintains assignment details including:
+- Due dates
+- Course information
+- Assignment descriptions
+- Submission status
+- Priority levels
+- Assignment URLs
+
+## System Requirements
+
+- macOS (for launchctl automation)
+- Python 3.8+
+- Canvas API access
+- Notion API access and integration
 
 ## Setup Instructions
 
 1. Clone the repository:
    ```
    git clone <repository-url>
-   cd canvas-to-notion
+   cd assignmentTracker
    ```
 
 2. Create a virtual environment:
    ```
    python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+   source venv/bin/activate
    ```
 
-3. Install the required dependencies:
+3. Install dependencies:
    ```
    pip install -r requirements.txt
    ```
 
-4. Create a `.env` file in the root directory and add your API keys and configuration settings:
+4. Configure environment variables in `.env`:
    ```
    CANVAS_TOKEN=<your_canvas_token>
    CANVAS_URL=<your_canvas_url>
@@ -33,18 +46,47 @@ The application connects to the Canvas API to retrieve assignment data and updat
    NOTION_DATABASE_ID=<your_notion_database_id>
    ```
 
-## Usage
+5. Set up launchctl automation:
+   ```
+   # Copy the plist file to LaunchAgents
+   cp com.assignmenttracker.sync.plist ~/Library/LaunchAgents/
+   
+   # Load the service
+   launchctl load ~/Library/LaunchAgents/com.assignmenttracker.sync.plist
+   ```
 
-To run the synchronization process, execute the following command:
+## LaunchCtl Configuration
+
+The service is configured to:
+- Start automatically when you log in
+- Run the sync script every 15 minutes
+- Restart automatically if it fails
+- Log output to `/Users/[username]/Library/Logs/assignmentTracker/sync.log`
+
+To manually manage the service:
+```bash
+# Check status
+launchctl list | grep assignmenttracker
+
+# Stop service
+launchctl unload ~/Library/LaunchAgents/com.assignmenttracker.sync.plist
+
+# Start service
+launchctl load ~/Library/LaunchAgents/com.assignmenttracker.sync.plist
 ```
+
+## Manual Usage
+
+To run the sync process manually:
+```bash
 python src/sync_service.py
 ```
 
-## Testing
+## Troubleshooting
 
-To run the tests, use:
+Check the logs at:
 ```
-pytest tests/
+~/Library/Logs/assignmentTracker/sync.log
 ```
 
 ## License
