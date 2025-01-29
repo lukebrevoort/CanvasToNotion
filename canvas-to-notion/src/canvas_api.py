@@ -143,10 +143,22 @@ class CanvasAPI:
                                     logger.warning(f"Could not fetch submission for assignment {assignment.name}: {str(e)}")
                             
                             # Determine status and grade
+                            # Initialize status
                             status = "Not started"
                             grade = None
-                            
+
+                            # First check has_submitted_submissions directly from assignment
+                            if getattr(assignment, 'has_submitted_submissions', False):
+                                logger.debug(f"Assignment {assignment.name} marked as submitted due to has_submitted_submissions=True")
+                                status = "Submitted"
+
+                            # Then check submission details if they exist
                             if submission:
+                                submission_status = getattr(submission, 'workflow_state', '')
+                                submitted_at = getattr(submission, 'submitted_at', None)
+                                attempts = getattr(submission, 'attempt', 0)
+                                
+                                # Check for grade/score
                                 points_possible = getattr(assignment, 'points_possible', 0)
                                 score = getattr(submission, 'score', None)
                                 
@@ -159,8 +171,8 @@ class CanvasAPI:
                                 elif getattr(submission, 'grade', None) is not None:
                                     status = "Mark received"
                                     grade = getattr(submission, 'grade', None)
-                                else:
-                                    status = "Submitted"
+
+                            logger.debug(f"Final status for {assignment.name}: {status}")
 
                             # Get group information
                             group_id = getattr(assignment, 'assignment_group_id', None)
