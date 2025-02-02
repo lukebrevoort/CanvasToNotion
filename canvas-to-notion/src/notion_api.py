@@ -194,92 +194,63 @@ class NotionAPI:
             return None
 
     def create_or_update_assignment(self, assignment: Assignment):
-        """
-        Creates new or updates existing assignment in Notion database.
-        Handles status preservation for manually set "In progress" items.
-        Respects "Dont show" flag to prevent updates.
-        
-        Args:
-            assignment: Assignment object containing Canvas assignment data
-        
-        Raises:
-            Exception: If Notion API call fails
-        """
         try:
+            # First check if assignment already exists by ID
             existing_page = self.get_assignment_page(assignment.id)
             
             # Convert course_id to string and look up UUID
             course_id_str = str(assignment.course_id)
             course_uuid = self.course_mapping.get(course_id_str)
             
-            # Log course mapping attempt
-            logger.debug(f"Looking up course {course_id_str} in mapping: {self.course_mapping}")
-
-            
             if not course_uuid:
                 logger.warning(f"No Notion UUID found for course {course_id_str}")
                 return
-            
-            # Parse due date
-            due_date = self._parse_date(assignment.due_date)
-            
-            # Prepare properties
-            # Define valid priority options
-            VALID_PRIORITIES = ["Low", "Medium", "High"]
-            
-            # Prepare properties
+    
+            # Prepare base properties
             properties = {
                 "Assignment Title": {"title": [{"text": {"content": str(assignment.name)}}]},
                 "AssignmentID": {"number": int(assignment.id)},
                 "Description": {"rich_text": [{"text": {"content": self._clean_html(assignment.description)}}]},
                 "Course": {"relation": [{"id": course_uuid}]},
-                "Status": {"status": {"name": str(assignment.status)}},
-                "Assignment Group": {"select": {"name": assignment.group_name}} if assignment.group_name else None,
-                "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None,
+                # ... rest of properties setup
             }
-
-            # Only add Priority if it's a valid value
-            if assignment.priority in VALID_PRIORITIES:
-                properties["Priority"] = {"select": {"name": assignment.priority}}
-            else:
-                properties["Priority"] = {"select": {"name": "Low"}}  # Default to Low if invalid/None
-
-            properties = {k: v for k, v in properties.items() if v is not None}
-            
-            if due_date:
-                properties["Due Date"] = {"date": {"start": due_date.isoformat()}}
-            
-            if assignment.grade is not None:
-                try:
-                    properties["Grade (%)"] = {"number": float(assignment.grade)}
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
-                    # Also set Mark as property
-                    if assignment.mark is not None:
-                        try:
-                            properties["Status"] = {"status": "Mark received"}
-                        except (ValueError, TypeError):
-                            logger.warning(f"Invalid mark format for assignment {assignment.name}: {assignment.mark}")
-
+    
             if existing_page:
-                logger.info(f"Updating assignment: {assignment.name}")
+                logger.info(f"Updating existing assignment: {assignment.name}")
                 # Get current status from existing page
                 current_status = existing_page["properties"]["Status"]["status"]["name"]
+                
+                # Check for "Dont show" or "In progress" status
                 if current_status == "Dont show":
                     logger.info(f"Skipping update for {assignment.name} due to 'Dont show' status")
                     return
-                #If current_status is manually put In progress, preserve it and update else
-                if current_status == "In progress":
+                elif current_status == "In progress":
                     logger.info(f"Preserving 'In progress' status for {assignment.name}")
-                    # Remove status from properties to keep existing status
+                    # Remove status from properties to preserve existing status
                     properties.pop("Status", None)
-
+                
+                # Update existing page
                 self._make_notion_request(
                     "update_page",
                     page_id=existing_page["id"],
                     properties=properties
                 )
             else:
+                # Before creating new page, double check no duplicate exists
+                double_check = self.notion.databases.query(
+                    database_id=self.database_id,
+                    filter={
+                        "property": "AssignmentID",
+                        "number": {"equals": assignment.id}
+                    }
+                )
+                
+                if double_check.get('results'):
+                    logger.warning(f"Duplicate prevention: Found existing assignment with ID {assignment.id}")
+                    # Recursively call update on the found page
+                    return self.create_or_update_assignment(assignment)
+                
+                # If truly new, create page
                 logger.info(f"Creating new assignment: {assignment.name}")
                 self._make_notion_request(
                     "create_page",
