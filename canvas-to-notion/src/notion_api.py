@@ -139,7 +139,7 @@ class NotionAPI:
     def _parse_date(self, date_str) -> Optional[datetime]:
         """
         Parses dates from various formats and converts to US/Eastern timezone.
-        Special handling for 11:59 PM/AM dates to return date-only.
+        Special handling for 11:55-11:59 PM/AM dates to return date-only.
         
         Args:
             date_str: Date string or datetime object
@@ -162,8 +162,8 @@ class NotionAPI:
 
         dt = dt.astimezone(pytz.timezone('US/Eastern'))
         
-        # If time is 11:59 PM/AM, return date only
-        if dt.hour == 23 and dt.minute == 59:
+        # If time is between 11:55-11:59 PM/AM, return date only
+        if (dt.hour == 23 or dt.hour == 11) and dt.minute >= 50:
             return dt.date()
             
         return dt
