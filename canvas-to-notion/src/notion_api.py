@@ -227,8 +227,6 @@ class NotionAPI:
                     graded = assignment.grade is not None
                     if graded:
                         properties["Status"] = {"status": {"name": "Mark received"}}
-                    else:
-                        properties["Status"] = {"status": {"name": "Not started"}}
                 
                 # Update existing page
                 self._make_notion_request(
