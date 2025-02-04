@@ -8,6 +8,7 @@ CANVAS_URL = os.getenv('CANVAS_URL')
 NOTION_TOKEN = os.getenv('NOTION_TOKEN')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 COURSE_DATABASE_ID = os.getenv('COURSE_DATABASE_ID')
+USER_ID = os.getenv('USER_ID')
 
 # Sync interval in seconds
 SYNC_INTERVAL = 900  # 15 minutes

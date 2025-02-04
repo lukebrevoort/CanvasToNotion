@@ -2,8 +2,9 @@ from notion_client import Client
 from datetime import datetime
 import pytz
 from typing import Dict, Optional
+from datetime import timezone
 from models.assignment import Assignment
-from utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID
+from utils.config import NOTION_TOKEN, NOTION_DATABASE_ID, COURSE_DATABASE_ID, USER_ID
 from bs4 import BeautifulSoup
 import re
 import logging
@@ -136,38 +137,6 @@ class NotionAPI:
             logger.warning(f"Error cleaning HTML content: {e}")
             return html_content[:2000]
 
-    def _parse_date(self, date_str) -> Optional[datetime]:
-        """
-        Parses dates from various formats and converts to US/Eastern timezone.
-        Special handling for 11:55-11:59 PM/AM dates to return date-only.
-        
-        Args:
-            date_str: Date string or datetime object
-        
-        Returns:
-            Parsed datetime in US/Eastern timezone, or None if parsing fails
-        """
-        if not date_str:
-            return None
-        if isinstance(date_str, datetime):
-            dt = date_str
-        else:
-            try:
-                if 'Z' in date_str:
-                    date_str = date_str.replace('Z', '+00:00')
-                dt = datetime.fromisoformat(date_str)
-            except ValueError as e:
-                logger.warning(f"Could not parse date: {date_str}. Error: {e}")
-                return None
-
-        dt = dt.astimezone(pytz.timezone('US/Eastern'))
-        
-        # If time is between 11:55-11:59 PM/AM, return date only
-        if (dt.hour == 23 or dt.hour == 11) and dt.minute >= 50:
-            return dt.date()
-            
-        return dt
-
     def get_assignment_page(self, assignment_id: int):
         """
         Retrieves existing assignment page from Notion by Canvas assignment ID.
@@ -205,6 +174,8 @@ class NotionAPI:
             if not course_uuid:
                 logger.warning(f"No Notion UUID found for course {course_id_str}")
                 return
+            
+            VALID_PRIORITIES = ["Low", "Medium", "High"]
     
             # Prepare base properties
             properties = {
@@ -212,8 +183,31 @@ class NotionAPI:
                 "AssignmentID": {"number": int(assignment.id)},
                 "Description": {"rich_text": [{"text": {"content": self._clean_html(assignment.description)}}]},
                 "Course": {"relation": [{"id": course_uuid}]},
-                # ... rest of properties setup
+                "Status": {"status": {"name": str(assignment.status)}},
+                "Assignment Group": {"select": {"name": assignment.group_name}} if assignment.group_name else None,
+                "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None,
             }
+
+            # Only add Priority if it's a valid value
+            if assignment.priority in VALID_PRIORITIES:
+                properties["Priority"] = {"select": {"name": assignment.priority}}
+            else:
+                properties["Priority"] = {"select": {"name": "Low"}}  # Default to Low if invalid/None
+
+            properties = {k: v for k, v in properties.items() if v is not None}
+            
+            
+            if assignment.grade is not None:
+                try:
+                    properties["Grade (%)"] = {"number": float(assignment.grade)}
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
+                    # Also set Mark as property
+                    if assignment.mark is not None:
+                        try:
+                            properties["Status"] = {"status": "Mark received"}
+                        except (ValueError, TypeError):
+                            logger.warning(f"Invalid mark format for assignment {assignment.name}: {assignment.mark}")
     
             if existing_page:
                 logger.info(f"Updating existing assignment: {assignment.name}")
@@ -228,6 +222,13 @@ class NotionAPI:
                     logger.info(f"Preserving 'In progress' status for {assignment.name}")
                     # Remove status from properties to preserve existing status
                     properties.pop("Status", None)
+                else:
+                    #only updating statis if status is not set to Don't show or In progress
+                    graded = assignment.grade is not None
+                    if graded:
+                        properties["Status"] = {"status": {"name": "Mark received"}}
+                    else:
+                        properties["Status"] = {"status": {"name": "Not started"}}
                 
                 # Update existing page
                 self._make_notion_request(
