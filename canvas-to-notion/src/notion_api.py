@@ -59,6 +59,29 @@ class NotionAPI:
         elif operation_type == "create_page":
             return self.notion.pages.create(**kwargs)
         raise ValueError(f"Unknown operation type: {operation_type}")
+    
+    def _parse_date(self, date_str) -> Optional[datetime]:
+        """Helper to parse dates from various formats"""
+        if not date_str:
+            return None
+        if isinstance(date_str, datetime):
+            dt = date_str
+        else:
+            try:
+                if 'Z' in date_str:
+                    date_str = date_str.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(date_str)
+            except ValueError as e:
+                logger.warning(f"Could not parse date: {date_str}. Error: {e}")
+                return None
+
+        dt = dt.astimezone(pytz.timezone('US/Eastern'))
+        
+        # Optional: If time is exactly 11:59, return date only (adjust as needed)
+        if dt.hour == 23 and dt.minute == 59:
+            return dt.date()
+            
+        return dt
 
     def _get_course_mapping(self) -> Dict[str, str]:
         """
@@ -163,21 +186,23 @@ class NotionAPI:
             return None
 
     def create_or_update_assignment(self, assignment: Assignment):
+        """Create or update assignment in Notion"""
         try:
-            # First check if assignment already exists by ID
             existing_page = self.get_assignment_page(assignment.id)
             
             # Convert course_id to string and look up UUID
             course_id_str = str(assignment.course_id)
             course_uuid = self.course_mapping.get(course_id_str)
-            
+            logger.debug(f"Looking up course {course_id_str} in mapping: {self.course_mapping}")
+
             if not course_uuid:
                 logger.warning(f"No Notion UUID found for course {course_id_str}")
                 return
             
-            VALID_PRIORITIES = ["Low", "Medium", "High"]
-    
-            # Prepare base properties
+            # Parse due date using the helper
+            due_date = self._parse_date(assignment.due_date)
+            
+            # Prepare properties
             properties = {
                 "Assignment Title": {"title": [{"text": {"content": str(assignment.name)}}]},
                 "AssignmentID": {"number": int(assignment.id)},
@@ -188,7 +213,13 @@ class NotionAPI:
                 "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None,
             }
 
+            # Re-implemented due-date feature using _parse_date
+            if due_date:
+                # If due_date is a datetime or date instance, isoformat() works for both
+                properties["Due Date"] = {"date": {"start": due_date.isoformat()}}
+
             # Only add Priority if it's a valid value
+            VALID_PRIORITIES = ["Low", "Medium", "High"]
             if assignment.priority in VALID_PRIORITIES:
                 properties["Priority"] = {"select": {"name": assignment.priority}}
             else:
@@ -196,46 +227,36 @@ class NotionAPI:
 
             properties = {k: v for k, v in properties.items() if v is not None}
             
-            
             if assignment.grade is not None:
                 try:
                     properties["Grade (%)"] = {"number": float(assignment.grade)}
                 except (ValueError, TypeError):
                     logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
-                    # Also set Mark as property
                     if assignment.mark is not None:
                         try:
-                            properties["Status"] = {"status": "Mark received"}
+                            properties["Status"] = {"status": {"name": "Mark received"}}
                         except (ValueError, TypeError):
                             logger.warning(f"Invalid mark format for assignment {assignment.name}: {assignment.mark}")
-    
+
             if existing_page:
                 logger.info(f"Updating existing assignment: {assignment.name}")
-                # Get current status from existing page
                 current_status = existing_page["properties"]["Status"]["status"]["name"]
-                
-                # Check for "Dont show" or "In progress" status
                 if current_status == "Dont show":
                     logger.info(f"Skipping update for {assignment.name} due to 'Dont show' status")
                     return
                 elif current_status == "In progress":
                     logger.info(f"Preserving 'In progress' status for {assignment.name}")
-                    # Remove status from properties to preserve existing status
                     properties.pop("Status", None)
                 else:
-                    #only updating statis if status is not set to Don't show or In progress
-                    graded = assignment.grade is not None
-                    if graded:
+                    if assignment.grade is not None:
                         properties["Status"] = {"status": {"name": "Mark received"}}
                 
-                # Update existing page
                 self._make_notion_request(
                     "update_page",
                     page_id=existing_page["id"],
                     properties=properties
                 )
             else:
-                # Before creating new page, double check no duplicate exists
                 double_check = self.notion.databases.query(
                     database_id=self.database_id,
                     filter={
@@ -243,13 +264,10 @@ class NotionAPI:
                         "number": {"equals": assignment.id}
                     }
                 )
-                
                 if double_check.get('results'):
                     logger.warning(f"Duplicate prevention: Found existing assignment with ID {assignment.id}")
-                    # Recursively call update on the found page
                     return self.create_or_update_assignment(assignment)
                 
-                # If truly new, create page
                 logger.info(f"Creating new assignment: {assignment.name}")
                 self._make_notion_request(
                     "create_page",
