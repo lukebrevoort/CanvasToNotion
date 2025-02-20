@@ -232,7 +232,7 @@ class NotionAPI:
                     properties["Grade (%)"] = {"number": float(assignment.grade)}
                 except (ValueError, TypeError):
                     logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
-                    if assignment.mark is not None:
+                    if hasattr(assignment, "mark") and assignment.mark is not None:
                         try:
                             properties["Status"] = {"status": {"name": "Mark received"}}
                         except (ValueError, TypeError):
