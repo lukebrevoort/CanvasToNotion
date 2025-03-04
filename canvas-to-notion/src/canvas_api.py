@@ -147,16 +147,35 @@ class CanvasAPI:
                             status = "Not started"
                             grade = None
 
-                            # First check has_submitted_submissions directly from assignment
-                            if getattr(assignment, 'has_submitted_submissions', False):
-                                logger.debug(f"Assignment {assignment.name} marked as submitted due to has_submitted_submissions=True")
-                                status = "Submitted"
+                            if submission:
+                                # Log submission details for debugging
+                                logger.debug(f"Submission for {assignment.name}: workflow_state={getattr(submission, 'workflow_state', 'N/A')}, "
+                                             f"submitted_at={getattr(submission, 'submitted_at', 'N/A')}, "
+                                             f"attempt={getattr(submission, 'attempt', 0)}")
+                                
+                                # More comprehensive submission check
+                                if (getattr(submission, 'submitted_at', None) or 
+                                    getattr(submission, 'workflow_state', '') in ['submitted', 'complete', 'graded'] or
+                                    getattr(submission, 'attempt', 0) > 0 or
+                                    getattr(submission, 'submission_type', None) is not None):
+                                    
+                                    logger.debug(f"Assignment {assignment.name} marked as submitted")
+                                    status = "Submitted"
 
                             # Then check submission details if they exist
                             if submission:
                                 submission_status = getattr(submission, 'workflow_state', '')
                                 submitted_at = getattr(submission, 'submitted_at', None)
                                 attempts = getattr(submission, 'attempt', 0)
+                                
+                                # Additional submission status checks
+                                if submission_status in ['submitted', 'graded', 'complete'] or submitted_at or attempts > 0:
+                                    status = "Submitted"
+                                    logger.debug(f"Assignment {assignment.name} marked as submitted based on detailed attributes")
+                                
+                                # Check for grade/score
+                                points_possible = getattr(assignment, 'points_possible', 0)
+                                score = getattr(submission, 'score', None)
                                 
                                 # Check for grade/score
                                 points_possible = getattr(assignment, 'points_possible', 0)

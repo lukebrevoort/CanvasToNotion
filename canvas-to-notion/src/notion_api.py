@@ -160,32 +160,47 @@ class NotionAPI:
             logger.warning(f"Error cleaning HTML content: {e}")
             return html_content[:2000]
 
-    def get_assignment_page(self, assignment_id: int):
+    def get_assignment_page(self, assignment_parameter):
         """
-        Retrieves existing assignment page from Notion by Canvas assignment ID.
+        Retrieves existing assignment page from Notion by Canvas assignment ID or name.
         
         Args:
-            assignment_id: Canvas assignment ID
+            assignment_parameter: Either Canvas assignment ID (int) or assignment name (str)
         
         Returns:
             Notion page object if found, None otherwise
         """
         try:
-            response = self.notion.databases.query(
-                database_id=self.database_id,
-                filter={
+            if isinstance(assignment_parameter, int) or (isinstance(assignment_parameter, str) and assignment_parameter.isdigit()):
+                # If parameter is an integer or string of digits, treat as assignment ID
+                filter_condition = {
                     "property": "AssignmentID",
-                    "number": {"equals": assignment_id}
+                    "number": {"equals": int(assignment_parameter)}
                 }
+            elif isinstance(assignment_parameter, str):
+                # If parameter is a string, treat as assignment name
+                filter_condition = {
+                    "property": "Assignment Title",
+                    "title": {"equals": assignment_parameter}
+                }
+            else:
+                logger.warning(f"Invalid parameter type: {type(assignment_parameter)}")
+                return None
+                
+            response = self._make_notion_request(
+                "query_database",
+                database_id=self.database_id,
+                filter=filter_condition
             )
             results = response.get('results', [])
             return results[0] if results else None
             
         except Exception as e:
-            logger.error(f"Error fetching assignment {assignment_id} from Notion: {str(e)}")
+            logger.error(f"Error fetching assignment ({assignment_parameter}) from Notion: {str(e)}")
             return None
 
     def create_or_update_assignment(self, assignment: Assignment):
+
         """Create or update assignment in Notion"""
         try:
             existing_page = self.get_assignment_page(assignment.id)
