@@ -4,6 +4,7 @@ from typing import List
 import pytz
 import backoff
 import requests
+import traceback
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from models.assignment import Assignment
@@ -110,6 +111,7 @@ class CanvasAPI:
         # Convert last_sync to timezone-aware if it isn't already
         if last_sync and last_sync.tzinfo is None:
             last_sync = last_sync.replace(tzinfo=pytz.UTC)
+            logger.debug(f"Made last_sync timezone aware: {last_sync}")
     
         assignments = []
         for course in self.get_courses():
@@ -125,22 +127,52 @@ class CanvasAPI:
                 group_weights = self._get_assignment_group_weights(course)
     
                 for assignment in course_assignments:
+                    assignment_name = getattr(assignment, 'name', 'Unknown')
+                    logger.debug(f"Processing assignment: {assignment_name}")
+                    
                     try:
                         # Parse updated_at date with timezone awareness
                         updated_at = getattr(assignment, 'updated_at', None)
-                        if isinstance(updated_at, str):
-                            updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-                        elif updated_at and updated_at.tzinfo is None:
-                            updated_at = updated_at.replace(tzinfo=pytz.UTC)
-    
-                        if not last_sync or (updated_at and updated_at > last_sync):
-                            # Check for submission
+                        logger.debug(f"Assignment {assignment_name} raw updated_at: {updated_at}, type: {type(updated_at)}")
+                        
+                        try:
+                            if isinstance(updated_at, str):
+                                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                logger.debug(f"Converted string updated_at to datetime: {updated_at}")
+                            elif updated_at and updated_at.tzinfo is None:
+                                updated_at = updated_at.replace(tzinfo=pytz.UTC)
+                                logger.debug(f"Added timezone to updated_at: {updated_at}")
+                        except Exception as date_error:
+                            logger.error(f"Error processing date for {assignment_name}: {date_error}")
+                            updated_at = None
+        
+                        # More explicit check to prevent None comparison errors
+                        should_process = False
+                        
+                        try:
+                            if not last_sync:
+                                should_process = True
+                                logger.debug(f"No last_sync, will process {assignment_name}")
+                            elif updated_at is not None and last_sync is not None:
+                                should_process = updated_at > last_sync
+                                logger.debug(f"Comparing dates for {assignment_name}: updated={updated_at}, last_sync={last_sync}, will process: {should_process}")
+                            else:
+                                # If we don't have updated_at info, process it anyway to be safe
+                                should_process = True
+                                logger.debug(f"Missing date info for {assignment_name}, processing anyway")
+                        except Exception as compare_error:
+                            logger.error(f"Error comparing dates for {assignment_name}: {compare_error}")
+                            should_process = True  # Process on error to be safe
+                            
+                        if should_process:
+                            # Always check for submission regardless of graded status
                             submission = None
-                            if getattr(assignment, 'graded_submissions_exist', False):
-                                try:
-                                    submission = assignment.get_submission(self.user_id)
-                                except Exception as e:
-                                    logger.warning(f"Could not fetch submission for assignment {assignment.name}: {str(e)}")
+                            try:
+                                # Attempt to get the submission even if not graded yet
+                                submission = assignment.get_submission(self.user_id)
+                                logger.debug(f"Got submission for {assignment_name}")
+                            except Exception as e:
+                                logger.warning(f"Could not fetch submission for assignment {assignment_name}: {str(e)}")
                             
                             # Determine status and grade
                             # Initialize status
@@ -149,68 +181,83 @@ class CanvasAPI:
 
                             if submission:
                                 # Log submission details for debugging
-                                logger.debug(f"Submission for {assignment.name}: workflow_state={getattr(submission, 'workflow_state', 'N/A')}, "
+                                logger.debug(f"Submission for {assignment_name}: workflow_state={getattr(submission, 'workflow_state', 'N/A')}, "
                                              f"submitted_at={getattr(submission, 'submitted_at', 'N/A')}, "
-                                             f"attempt={getattr(submission, 'attempt', 0)}")
+                                             f"attempt={getattr(submission, 'attempt', 0)}, "
+                                             f"submission_type={getattr(submission, 'submission_type', 'N/A')}, "
+                                             f"late={getattr(submission, 'late', 'N/A')}")
                                 
-                                # More comprehensive submission check
-                                if (getattr(submission, 'submitted_at', None) or 
-                                    getattr(submission, 'workflow_state', '') in ['submitted', 'complete', 'graded'] or
-                                    getattr(submission, 'attempt', 0) > 0 or
-                                    getattr(submission, 'submission_type', None) is not None):
-                                    
-                                    logger.debug(f"Assignment {assignment.name} marked as submitted")
-                                    status = "Submitted"
-
-                            # Then check submission details if they exist
-                            if submission:
+                                # Extract all relevant submission attributes
                                 submission_status = getattr(submission, 'workflow_state', '')
                                 submitted_at = getattr(submission, 'submitted_at', None)
                                 attempts = getattr(submission, 'attempt', 0)
+                                if attempts is None:
+                                    attempts = 0  # Safeguard against None values
+                                submission_type = getattr(submission, 'submission_type', None)
+                                has_submission = getattr(submission, 'has_submission', False)
                                 
-                                # Additional submission status checks
-                                if submission_status in ['submitted', 'graded', 'complete'] or submitted_at or attempts > 0:
-                                    status = "Submitted"
-                                    logger.debug(f"Assignment {assignment.name} marked as submitted based on detailed attributes")
+                                # Comprehensive submission check combining all conditions
+                                try:
+                                    if submitted_at or submission_status in ['submitted', 'complete', 'graded']:
+                                        status = "Submitted"
+                                        logger.debug(f"Assignment {assignment_name} marked as submitted based on status")
+                                    elif attempts > 0 or submission_type is not None or has_submission:
+                                        status = "Submitted"
+                                        logger.debug(f"Assignment {assignment_name} marked as submitted based on attempts/type")
+                                except Exception as submission_check_error:
+                                    logger.error(f"Error checking submission status for {assignment_name}: {submission_check_error}")
                                 
                                 # Check for grade/score
-                                points_possible = getattr(assignment, 'points_possible', 0)
-                                score = getattr(submission, 'score', None)
-                                
-                                # Check for grade/score
-                                points_possible = getattr(assignment, 'points_possible', 0)
-                                score = getattr(submission, 'score', None)
-                                
-                                if score is not None and points_possible:
-                                    try:
-                                        grade = (float(score) / float(points_possible))
+                                try:
+                                    points_possible = getattr(assignment, 'points_possible', 0)
+                                    if points_possible is None:
+                                        points_possible = 0
+                                    
+                                    score = getattr(submission, 'score', None)
+                                    
+                                    if score is not None and points_possible > 0:  # Ensure positive denominator
+                                        try:
+                                            grade = (float(score) / float(points_possible))
+                                            status = "Mark received"
+                                            logger.debug(f"Grade calculated for {assignment_name}: {grade}")
+                                        except (ValueError, ZeroDivisionError) as calc_error:
+                                            logger.error(f"Error calculating grade for {assignment_name}: {calc_error}")
+                                            grade = None
+                                    elif getattr(submission, 'grade', None) is not None:
                                         status = "Mark received"
-                                    except (ValueError, ZeroDivisionError):
-                                        grade = None
-                                elif getattr(submission, 'grade', None) is not None:
-                                    status = "Mark received"
-                                    grade = getattr(submission, 'grade', None)
+                                        grade = getattr(submission, 'grade', None)
+                                        logger.debug(f"Grade retrieved for {assignment_name}: {grade}")
+                                except Exception as grade_error:
+                                    logger.error(f"Error processing grade for {assignment_name}: {grade_error}")
 
-                            logger.debug(f"Final status for {assignment.name}: {status}")
+                            logger.debug(f"Final status for {assignment_name}: {status}")
 
                             # Get group information
-                            group_id = getattr(assignment, 'assignment_group_id', None)
-                            group_info = group_weights.get(group_id, {})
-                            group_name = group_info.get('name')
-                            group_weight = group_info.get('weight')
+                            try:
+                                group_id = getattr(assignment, 'assignment_group_id', None)
+                                group_info = group_weights.get(group_id, {})
+                                group_name = group_info.get('name')
+                                group_weight = group_info.get('weight')
+                                logger.debug(f"Group info for {assignment_name}: id={group_id}, name={group_name}, weight={group_weight}")
 
-                            priority = None
-                            if group_weight is not None:
-                                if group_weight <= 0.10:
-                                    priority = "Low"
-                                elif group_weight <= 0.20:
-                                    priority = "Medium" 
-                                else:
-                                    priority = "High"
+                                priority = None
+                                if group_weight is not None:
+                                    if float(group_weight) <= 0.10:
+                                        priority = "Low"
+                                    elif float(group_weight) <= 0.20:
+                                        priority = "Medium" 
+                                    else:
+                                        priority = "High"
+                                    logger.debug(f"Priority for {assignment_name}: {priority}")
+                            except Exception as group_error:
+                                logger.error(f"Error processing group info for {assignment_name}: {group_error}")
+                                group_name = None
+                                group_weight = None
+                                priority = None
                             
                             assignments.append(Assignment(
                                 id=getattr(assignment, 'id', None),
-                                name=getattr(assignment, 'name', 'Unnamed Assignment'),
+                                name=assignment_name,
                                 description=getattr(assignment, 'description', ''),
                                 due_date=getattr(assignment, 'due_at', None),
                                 course_id=getattr(course, 'id', None),
@@ -221,9 +268,20 @@ class CanvasAPI:
                                 group_weight=group_weight,
                                 priority=priority
                             ))
+                            logger.debug(f"Added assignment {assignment_name} to result list")
                             
                     except Exception as e:
-                        logger.warning(f"Skipping assignment {getattr(assignment, 'name', 'Unknown')} due to error: {str(e)}")
+                        error_message = str(e)
+                        logger.error(f"Error processing assignment {assignment_name}: {error_message}")
+                        logger.error(f"Stack trace: {traceback.format_exc()}")
+                        
+                        if "'>' not supported between instances of 'NoneType'" in error_message:
+                            logger.error(f"Type comparison error for assignment {assignment_name}")
+                            # Debug specific variables that might be causing the issue
+                            logger.error(f"assignment.updated_at: {getattr(assignment, 'updated_at', None)}")
+                            logger.error(f"updated_at: {updated_at}, type: {type(updated_at) if updated_at is not None else 'None'}")
+                            logger.error(f"last_sync: {last_sync}, type: {type(last_sync) if last_sync is not None else 'None'}")
+                        
                         continue
                         
             except Exception as e:
