@@ -198,6 +198,70 @@ class NotionAPI:
         except Exception as e:
             logger.error(f"Error fetching assignment ({assignment_parameter}) from Notion: {str(e)}")
             return None
+    
+    
+    def ensure_course_exists(self, course_id, course_name, term_id=None):
+        """
+        Ensures a course exists in the Notion course database.
+        Creates it if it doesn't exist.
+        
+        Args:
+            course_id: Canvas course ID
+            course_name: Course name
+            term_id: Optional term ID
+            
+        Returns:
+            str: Notion page ID for the course
+        """
+        try:
+            # Check if course exists by ID
+            filter_condition = {
+                "property": "CourseID",
+                "multi_select": {
+                    "contains": str(course_id)
+                }
+            }
+            
+            response = self._make_notion_request(
+                "query_database",
+                database_id=self.course_db_id,
+                filter=filter_condition
+            )
+            
+            if response.get('results'):
+                # Course exists
+                course_page_id = response['results'][0]['id']
+                logger.debug(f"Found existing course: {course_name} (ID: {course_id})")
+                return course_page_id
+            
+            # Course doesn't exist, create it
+            logger.info(f"Creating new course in Notion: {course_name} (ID: {course_id})")
+            
+            properties = {
+                "Course Name": {"title": [{"text": {"content": course_name}}]},
+                "CourseID": {"multi_select": [{"name": str(course_id)}]},
+                "Status": {"select": {"name": "Active"}}
+            }
+            
+            # Add term if available
+            if term_id:
+                properties["Term"] = {"select": {"name": f"Term {term_id}"}}
+            
+            response = self._make_notion_request(
+                "create_page",
+                parent={"database_id": self.course_db_id},
+                properties=properties
+            )
+            
+            # Update course mapping
+            self.course_mapping[str(course_id)] = response['id']
+            logger.info(f"Created course in Notion: {course_name} (ID: {course_id})")
+            
+            return response['id']
+            
+        except Exception as e:
+            logger.error(f"Failed to ensure course exists: {e}")
+            return None
 
     def create_or_update_assignment(self, assignment: Assignment):
 
@@ -211,8 +275,15 @@ class NotionAPI:
             logger.debug(f"Looking up course {course_id_str} in mapping: {self.course_mapping}")
 
             if not course_uuid:
-                logger.warning(f"No Notion UUID found for course {course_id_str}")
-                return
+                # Try to create the course if it doesn't exist
+                course_uuid = self.ensure_course_exists(
+                    assignment.course_id, 
+                    assignment.course_name
+                )
+                
+                if not course_uuid:
+                    logger.warning(f"No Notion UUID found for course {course_id_str} and could not create it")
+                    return
             
             # Parse due date using the helper
             due_date = self._parse_date(assignment.due_date)

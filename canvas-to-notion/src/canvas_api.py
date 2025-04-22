@@ -45,6 +45,80 @@ class CanvasAPI:
         self.user_id = self._get_user_id()
 
     @backoff.on_exception(
+    backoff.expo,
+    (requests.exceptions.RequestException, ConnectionError),
+    max_tries=5
+    )
+    def _get_current_term(self):
+        """
+        Determines the current active enrollment term from user's enrolled courses.
+        
+        Returns:
+            int: The ID of the current term, or None if it cannot be determined
+        """
+        try:
+            # Get courses the user is enrolled in - this doesn't require admin permissions
+            courses = self.canvas.get_courses(enrollment_state='active')
+            
+            # Extract all term IDs from active courses
+            term_ids = {}
+            now = datetime.now(pytz.UTC)
+            
+            for course in courses:
+                term_id = getattr(course, 'enrollment_term_id', None)
+                if not term_id:
+                    continue
+                
+                course_start = getattr(course, 'start_at', None)
+                course_end = getattr(course, 'end_at', None)
+                
+                # Parse dates if they're strings
+                if isinstance(course_start, str):
+                    course_start = datetime.fromisoformat(course_start.replace('Z', '+00:00'))
+                if isinstance(course_end, str):
+                    course_end = datetime.fromisoformat(course_end.replace('Z', '+00:00'))
+                
+                # Courses without end dates are considered ongoing
+                is_current = True
+                if course_end and now > course_end:
+                    is_current = False
+                
+                # Store term info with a flag indicating if it's current
+                if term_id not in term_ids:
+                    term_ids[term_id] = {
+                        'id': term_id,
+                        'is_current': is_current,
+                        'course_count': 1
+                    }
+                else:
+                    # Update existing term entry
+                    term_ids[term_id]['course_count'] += 1
+                    # If any course in this term is current, mark the term as current
+                    term_ids[term_id]['is_current'] = term_ids[term_id]['is_current'] or is_current
+            
+            # First try to find a term marked as current
+            current_terms = [term for term in term_ids.values() if term['is_current']]
+            
+            if current_terms:
+                # If multiple current terms, take the one with most courses
+                current_term = max(current_terms, key=lambda x: x['course_count'])
+                logger.info(f"Current term detected: ID {current_term['id']} (from {current_term['course_count']} courses)")
+                return current_term['id']
+            
+            # Fallback: if no current term found, use the one with most courses
+            if term_ids:
+                most_common_term = max(term_ids.values(), key=lambda x: x['course_count'])
+                logger.info(f"Using most common term as fallback: ID {most_common_term['id']}")
+                return most_common_term['id']
+                
+            logger.warning("No terms found in enrolled courses")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error determining current term: {e}")
+            return None
+
+    @backoff.on_exception(
         backoff.expo,
         (requests.exceptions.RequestException, ConnectionError),
         max_tries=5
@@ -116,8 +190,10 @@ class CanvasAPI:
         assignments = []
         for course in self.get_courses():
             try:
+                # Get current term ID
+                current_term = self._get_current_term()
                 term_id = getattr(course, 'enrollment_term_id', None)
-                if term_id != 449:  # Spring 2024 term
+                if term_id != current_term: 
                     logger.info(f"Skipping course {getattr(course, 'name', course.id)} - not in current term")
                     continue
                     
