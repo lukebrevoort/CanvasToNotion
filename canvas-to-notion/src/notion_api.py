@@ -294,7 +294,7 @@ class NotionAPI:
                 "AssignmentID": {"number": int(assignment.id)},
                 "Description": {"rich_text": [{"text": {"content": self._clean_html(assignment.description)}}]},
                 "Course": {"relation": [{"id": course_uuid}]},
-                "Status": {"status": {"name": str(assignment.status)}},
+                "Status": {"select": {"name": str(assignment.status)}},
                 "Assignment Group": {"select": {"name": assignment.group_name}} if assignment.group_name else None,
                 "Group Weight": {"number": assignment.group_weight} if assignment.group_weight is not None else None,
             }
@@ -320,13 +320,13 @@ class NotionAPI:
                     logger.warning(f"Invalid grade format for assignment {assignment.name}: {assignment.grade}")
                     if hasattr(assignment, "mark") and assignment.mark is not None:
                         try:
-                            properties["Status"] = {"status": {"name": "Mark received"}}
+                            properties["Status"] = {"select": {"name": "Mark received"}}
                         except (ValueError, TypeError):
                             logger.warning(f"Invalid mark format for assignment {assignment.name}: {assignment.mark}")
 
             if existing_page:
                 logger.info(f"Updating existing assignment: {assignment.name}")
-                current_status = existing_page["properties"]["Status"]["status"]["name"]
+                current_status = existing_page["properties"]["Status"]["select"]["name"]
                 if current_status == "Dont show":
                     logger.info(f"Skipping update for {assignment.name} due to 'Dont show' status")
                     return
@@ -335,7 +335,7 @@ class NotionAPI:
                     properties.pop("Status", None)
                 else:
                     if assignment.grade is not None:
-                        properties["Status"] = {"status": {"name": "Mark received"}}
+                        properties["Status"] = {"select": {"name": "Mark received"}}
                 
                 self._make_notion_request(
                     "update_page",
