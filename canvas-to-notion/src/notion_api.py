@@ -77,8 +77,8 @@ class NotionAPI:
 
         dt = dt.astimezone(pytz.timezone('US/Eastern'))
         
-        # Optional: If time is exactly 11:59, return date only (adjust as needed)
-        if dt.hour == 23 and dt.minute == 59:
+        # Optional: If time is exactly 11:55-11:59, return date only (adjust as needed)
+        if dt.hour == 23 and 55 <= dt.minute <= 59:
             return dt.date()
             
         return dt

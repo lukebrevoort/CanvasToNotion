@@ -49,8 +49,7 @@ class NotionSetup:
                 }},
                 "Grade (%)": {"number": {"format": "percent"}},
                 "Assignment Group": {"select": {}},
-                "Group Weight": {"number": {}},
-                "Course": {"relation": {}} 
+                "Group Weight": {"number": {}}
             }
             
             response = self.notion.databases.create(
