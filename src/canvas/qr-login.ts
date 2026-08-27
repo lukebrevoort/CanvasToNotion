@@ -33,7 +33,10 @@ export function parseQrLoginUrl(qrUrl: string): ParsedQr {
     throw new Error(`Expected path /canvas/login, got '${url.pathname}'`);
   }
   const domain = url.searchParams.get("domain");
-  const code = url.searchParams.get("code");
+  // The QR carries per-app codes: `code` (iOS student) and `code_android`
+  // (Android student). We authenticate as the Android app (candroid) because
+  // its mobile_verify registration is reachable, so use its code.
+  const code = url.searchParams.get("code_android") ?? url.searchParams.get("code");
   if (!domain) throw new Error("QR URL is missing 'domain' query parameter");
   if (!code) throw new Error("QR URL is missing 'code' query parameter");
   return {
@@ -44,8 +47,14 @@ export function parseQrLoginUrl(qrUrl: string): ParsedQr {
 }
 
 async function fetchMobileClient(domain: string, ssoHost: string) {
-  const res = await fetch(`https://${ssoHost}/api/v1/mobile_verify.json?domain=${encodeURIComponent(domain)}`, {
-    headers: { Accept: "application/json" },
+  // Instructure's mobile_verify endpoint rejects requests that don't identify
+  // as the real Android app (candroid) via the user_agent query param.
+  const ua = "candroid/8.24.0 (123456)";
+  const url =
+    `https://${ssoHost}/api/v1/mobile_verify.json?domain=${encodeURIComponent(domain)}` +
+    `&user_agent=${encodeURIComponent(ua)}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": ua },
   });
   if (!res.ok) throw new Error(`mobile_verify failed: ${res.status} ${res.statusText}`);
   const data = (await res.json()) as {
@@ -67,8 +76,12 @@ export async function qrLogin(qrUrl: string): Promise<OAuthCredentials> {
 
   const res = await fetch(`${client.baseUrl}/login/oauth2/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+      "User-Agent": "candroid/8.24.0 (123456)",
+    },
+    body: new URLSearchParams({
       client_id: client.clientId,
       client_secret: client.clientSecret,
       grant_type: "authorization_code",
@@ -87,6 +100,7 @@ export async function qrLogin(qrUrl: string): Promise<OAuthCredentials> {
   if (!data.access_token || !data.refresh_token) {
     throw new Error("Token response missing access_token or refresh_token");
   }
+
 
   return {
     baseUrl: client.baseUrl,
