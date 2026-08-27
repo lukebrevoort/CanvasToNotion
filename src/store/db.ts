@@ -226,7 +226,15 @@ export interface UpsertResult {
  */
 export function upsertAssignment(input: AssignmentInput): UpsertResult {
   const row = getAssignmentStmt.get(input.canvas_id) as AssignmentRow | undefined;
-  const record = { ...input, is_quiz: input.is_quiz ? 1 : 0, ts: now() };
+  const bool = (v: boolean | null | undefined): number | null => (v == null ? null : v ? 1 : 0);
+  const record = {
+    ...input,
+    is_quiz: input.is_quiz ? 1 : 0,
+    sub_late: bool(input.sub_late),
+    sub_excused: bool(input.sub_excused),
+    sub_missing: bool(input.sub_missing),
+    ts: now(),
+  };
 
   if (!row) {
     insertAssignmentStmt.run(record);
