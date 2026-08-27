@@ -1,4 +1,7 @@
-
-# ...existing code...
+node_modules/
+data/
 .env
-# ...existing code...
+*.log
+.DS_Store
+__pycache__/
+.venv/
