@@ -12,6 +12,7 @@
     "auth:token": "tsx src/cli.ts auth-token",
     "verify": "tsx src/cli.ts verify",
     "mcp": "tsx src/mcp/server.ts",
+    "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -8,6 +8,7 @@ import {
 } from "../store/db.js";
 import { notion, savedDbIds } from "../notion/schema.js";
 import { upsertCoursePage, upsertAssignmentPage } from "../notion/projector.js";
+import { isQuizAssignment } from "./quiz-classifier.js";
 
 /**
  * Sync pipeline per run:
@@ -134,7 +135,7 @@ function toInput(
     group_id: a.assignment_group_id ?? null,
     group_name: group?.name ?? null,
     group_weight: group?.weight ?? null,
-    is_quiz: a.quiz_id != null,
+    is_quiz: isQuizAssignment(a),
     position: a.position ?? null,
     updated_at: a.updated_at ?? null,
     sub_workflow_state: sub?.workflow_state ?? null,
