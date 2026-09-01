@@ -21,6 +21,8 @@ export interface CanvasAssignment {
   submission_types?: string[];
   assignment_group_id?: number;
   quiz_id?: number | null;
+  is_quiz_assignment?: boolean;
+  is_quiz_lti_assignment?: boolean;
   position?: number;
   updated_at?: string;
   created_at?: string;
