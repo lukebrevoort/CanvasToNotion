@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   course_id INTEGER NOT NULL REFERENCES courses(canvas_id),
   name TEXT NOT NULL,
   due_at TEXT,
+  calendar_due_at TEXT,
   unlock_at TEXT,
   lock_at TEXT,
   points_possible REAL,
@@ -82,6 +83,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_assignment ON snapshots(assignment_id);
 `);
 
+// Existing installations predate calendar_due_at. Backfill the exact Canvas
+// timestamp so only deadlines affected by a newer projection rule are diffed.
+const assignmentColumns = db.pragma("table_info(assignments)") as { name: string }[];
+if (!assignmentColumns.some((column) => column.name === "calendar_due_at")) {
+  db.exec("ALTER TABLE assignments ADD COLUMN calendar_due_at TEXT");
+  db.exec("UPDATE assignments SET calendar_due_at = due_at");
+}
+
 export function getMeta(key: string): string | null {
   const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
   return row?.value ?? null;
@@ -93,7 +102,7 @@ export function setMeta(key: string, value: string): void {
 
 /** Fields of the assignments table we diff to decide whether Notion needs a push. */
 const DIFF_FIELDS = [
-  "name", "due_at", "unlock_at", "lock_at", "points_possible", "description_html",
+  "name", "due_at", "calendar_due_at", "unlock_at", "lock_at", "points_possible", "description_html",
   "submission_types", "group_id", "group_name", "group_weight", "is_quiz", "position",
   "sub_workflow_state", "sub_score", "sub_grade", "sub_submitted_at", "sub_graded_at",
   "sub_attempts", "sub_late", "sub_excused", "sub_missing",
@@ -104,6 +113,7 @@ export interface AssignmentRow {
   course_id: number;
   name: string;
   due_at: string | null;
+  calendar_due_at: string | null;
   unlock_at: string | null;
   lock_at: string | null;
   points_possible: number | null;
@@ -134,6 +144,7 @@ export interface AssignmentInput {
   course_id: number;
   name: string;
   due_at: string | null;
+  calendar_due_at: string | null;
   unlock_at: string | null;
   lock_at: string | null;
   points_possible: number | null;
@@ -186,13 +197,13 @@ export function upsertCourse(c: {
 const getAssignmentStmt = db.prepare("SELECT * FROM assignments WHERE canvas_id = ?");
 const insertAssignmentStmt = db.prepare(`
   INSERT INTO assignments (
-    canvas_id, course_id, name, due_at, unlock_at, lock_at, points_possible, description_html,
+    canvas_id, course_id, name, due_at, calendar_due_at, unlock_at, lock_at, points_possible, description_html,
     submission_types, group_id, group_name, group_weight, is_quiz, position, updated_at,
     first_seen_at, last_seen_at,
     sub_workflow_state, sub_score, sub_grade, sub_submitted_at, sub_graded_at,
     sub_attempts, sub_late, sub_excused, sub_missing
   ) VALUES (
-    @canvas_id, @course_id, @name, @due_at, @unlock_at, @lock_at, @points_possible, @description_html,
+    @canvas_id, @course_id, @name, @due_at, @calendar_due_at, @unlock_at, @lock_at, @points_possible, @description_html,
     @submission_types, @group_id, @group_name, @group_weight, @is_quiz, @position, @updated_at,
     @ts, @ts,
     @sub_workflow_state, @sub_score, @sub_grade, @sub_submitted_at, @sub_graded_at,
@@ -201,7 +212,7 @@ const insertAssignmentStmt = db.prepare(`
 `);
 const updateAssignmentStmt = db.prepare(`
   UPDATE assignments SET
-    name = @name, due_at = @due_at, unlock_at = @unlock_at, lock_at = @lock_at,
+    name = @name, due_at = @due_at, calendar_due_at = @calendar_due_at, unlock_at = @unlock_at, lock_at = @lock_at,
     points_possible = @points_possible, description_html = @description_html,
     submission_types = @submission_types, group_id = @group_id, group_name = @group_name,
     group_weight = @group_weight, is_quiz = @is_quiz, position = @position, updated_at = @updated_at,

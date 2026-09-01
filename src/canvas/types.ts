@@ -6,6 +6,7 @@ export interface CanvasCourse {
   enrollment_term_id?: number;
   start_at?: string | null;
   end_at?: string | null;
+  time_zone?: string;
   created_at?: string;
 }
 
