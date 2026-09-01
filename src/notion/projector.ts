@@ -47,7 +47,7 @@ export function assignmentProperties(row: AssignmentRow, domain: string): Record
     "Canvas URL": { url: canvasUrl(domain, row.course_id, row.canvas_id) },
     Priority: { select: { name: priority(row.group_weight) } },
   };
-  const due = date(row.due_at);
+  const due = date(row.calendar_due_at ?? row.due_at);
   if (due) props["Due Date"] = due;
   const unlock = date(row.unlock_at);
   if (unlock) props["Unlock Date"] = unlock;

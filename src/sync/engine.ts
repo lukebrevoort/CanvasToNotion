@@ -8,6 +8,7 @@ import {
 } from "../store/db.js";
 import { notion, savedDbIds } from "../notion/schema.js";
 import { upsertCoursePage, upsertAssignmentPage } from "../notion/projector.js";
+import { notionCalendarDate } from "../notion/calendar-date.js";
 import { isQuizAssignment } from "./quiz-classifier.js";
 
 /**
@@ -41,11 +42,13 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
   try {
     const user = await canvas.me();
     const coursePageIds = new Map<number, string>();
+    const courseTimeZones = new Map<number, string | null>();
 
     for await (const course of canvas.courses("active")) {
       coursesSeen++;
       upsertCourse(course);
       coursePageIds.set(course.id, null as unknown as string);
+      courseTimeZones.set(course.id, course.time_zone ?? null);
     }
 
     for (const [courseId] of coursePageIds) {
@@ -68,7 +71,7 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
           assignmentsSeen++;
           try {
             const submission = await fetchSubmission(canvas, a, user.id);
-            const result = upsertAssignment(toInput(a, submission, groups));
+            const result = upsertAssignment(toInput(a, submission, groups, courseTimeZones.get(courseId) ?? null));
             const row = getAssignment(a.id);
             if (!row) continue;
 
@@ -120,6 +123,7 @@ function toInput(
   a: CanvasAssignment,
   sub: CanvasSubmission | null,
   groups: Map<number, { name: string | null; weight: number | null }>,
+  courseTimeZone: string | null,
 ) {
   const group = groups.get(a.assignment_group_id ?? -1);
   return {
@@ -127,6 +131,7 @@ function toInput(
     course_id: a.course_id,
     name: a.name ?? `Assignment ${a.id}`,
     due_at: a.due_at ?? null,
+    calendar_due_at: notionCalendarDate(a.due_at ?? null, courseTimeZone),
     unlock_at: a.unlock_at ?? null,
     lock_at: a.lock_at ?? null,
     points_possible: a.points_possible ?? null,
