@@ -22,6 +22,9 @@ Canvas ──→ SQLite (canonical mirror + snapshots) ──→ Notion (project
   an append-only `snapshots` table capturing every observed change.
 - **Notion layout**: `🎓 Canvas HQ` page → `Assignments` + `Courses` databases,
   related. Created by `npm run setup`.
+- **Calendar titles**: assignment titles are prefixed with the class name (for
+  example, `[Biology 101] Syllabus Quiz`) so events remain identifiable in
+  Notion Calendar.
 
 ## Ownership model
 
