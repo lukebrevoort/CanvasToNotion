@@ -36,10 +36,17 @@ function date(dateStr: string | null): { date: { start: string } } | undefined {
   return dateStr ? { date: { start: dateStr } } : undefined;
 }
 
-export function assignmentProperties(row: AssignmentRow, domain: string): Record<string, any> {
+export function assignmentProperties(
+  row: AssignmentRow,
+  domain: string,
+  courseLabel?: string,
+): Record<string, any> {
   const pp = row.points_possible ?? 0;
+  const title = courseLabel?.trim() ? `[${courseLabel.trim()}] ${row.name}` : row.name;
   const props: Record<string, any> = {
-    Name: { title: [{ text: { content: row.name } }] },
+    // Notion Calendar uses the title property as the event label. Prefixing it
+    // keeps the class identifiable even when the rest of the card is collapsed.
+    Name: { title: [{ text: { content: title } }] },
     AssignmentID: { number: row.canvas_id },
     Status: { select: { name: syncStatus(row) } },
     Late: { checkbox: Boolean(row.sub_late) },
@@ -106,7 +113,12 @@ export async function upsertAssignmentPage(
   client: Client,
   row: AssignmentRow,
   domain: string,
-  opts: { isNew: boolean; changedFields: string[]; coursePageId: string | null },
+  opts: {
+    isNew: boolean;
+    changedFields: string[];
+    coursePageId: string | null;
+    courseLabel: string;
+  },
 ): Promise<{ pageId: string; pushed: boolean }> {
   const { assignmentsDbId, assignmentsDsId } = savedDbIds();
   const existingPageId = await findPage(client, assignmentsDsId, "AssignmentID", row.canvas_id);
@@ -126,7 +138,7 @@ export async function upsertAssignmentPage(
 
   if (doNotSync) return { pageId: existingPageId ?? "", pushed: false };
 
-  const props: Record<string, any> = assignmentProperties(row, domain);
+  const props: Record<string, any> = assignmentProperties(row, domain, opts.courseLabel);
   if (existingPageId) {
     // Humans own these — preserve what's on the page, never overwrite.
     props["Hidden"] = { checkbox: hidden };

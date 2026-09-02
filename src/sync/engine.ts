@@ -75,11 +75,14 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
             const row = getAssignment(a.id);
             if (!row) continue;
 
-            if (result.isNew || result.changedFields.length > 0) {
+            // A full sync also re-projects unchanged rows. This lets projection
+            // improvements (such as calendar titles) update existing pages.
+            if (opts.full || result.isNew || result.changedFields.length > 0) {
               const push = await upsertAssignmentPage(notionClient, row, config.canvasDomain, {
                 isNew: result.isNew,
                 changedFields: result.changedFields,
                 coursePageId: coursePageIds.get(courseId) ?? null,
+                courseLabel: courseRow.name,
               });
               if (push.pushed) changesPushed++;
             }
