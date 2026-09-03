@@ -118,6 +118,7 @@ export async function upsertAssignmentPage(
     changedFields: string[];
     coursePageId: string | null;
     courseLabel: string;
+    forceDetails?: boolean;
   },
 ): Promise<{ pageId: string; pushed: boolean }> {
   const { assignmentsDbId, assignmentsDsId } = savedDbIds();
@@ -155,10 +156,15 @@ export async function upsertAssignmentPage(
     pageId = page.id;
   }
 
-  // Body: full render on create or when the description changed.
-  const descriptionChanged = opts.isNew || opts.changedFields.includes("description_html");
-  if (descriptionChanged) {
-    await replaceDetailsSection(client, pageId, detailsBlocks(row));
+  // Body: re-render whenever anything changed — the facts list mirrors
+  // submission state, so score/status changes need a fresh Details section.
+  // Full syncs force a refresh so projection improvements backfill existing pages.
+  const detailsChanged = opts.isNew || opts.forceDetails || opts.changedFields.length > 0;
+  if (detailsChanged) {
+    await replaceDetailsSection(client, pageId, detailsBlocks(row, {
+      status: syncStatus(row),
+      canvasDomain: domain,
+    }));
   }
 
   // Activity log for notable property changes.
