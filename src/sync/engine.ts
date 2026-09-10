@@ -82,7 +82,7 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
                 isNew: result.isNew,
                 changedFields: result.changedFields,
                 coursePageId: coursePageIds.get(courseId) ?? null,
-                courseLabel: courseRow.name,
+                courseLabel: courseRow.course_code?.trim() || courseRow.name,
                 forceDetails: Boolean(opts.full),
               });
               if (push.pushed) changesPushed++;

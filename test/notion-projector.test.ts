@@ -74,3 +74,12 @@ test("prefixes the Notion title with the class label for calendar visibility", (
     title: [{ text: { content: "[BIO 101] Syllabus Quiz" } }],
   });
 });
+
+test("falls back to course name when no course code label is given", () => {
+  const row = { name: "Syllabus Quiz" } as AssignmentRow;
+
+  const properties = assignmentProperties(row, "example.instructure.com", "  ");
+  assert.deepEqual(properties.Name, {
+    title: [{ text: { content: "Syllabus Quiz" } }],
+  });
+});
