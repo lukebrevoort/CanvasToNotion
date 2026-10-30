@@ -4,9 +4,9 @@ import { CanvasClient } from "../canvas/client.js";
 import type { CanvasAssignment, CanvasSubmission } from "../canvas/types.js";
 import {
   db, upsertCourse, upsertAssignment, startSyncRun, finishSyncRun,
-  lastSuccessfulSyncStart, getAssignment,
+  lastSuccessfulSyncStart, getAssignment, pendingProjectionsForCourse, completeProjection,
 } from "../store/db.js";
-import { notion, savedDbIds } from "../notion/schema.js";
+import { notion } from "../notion/schema.js";
 import { upsertCoursePage, upsertAssignmentPage } from "../notion/projector.js";
 import { notionCalendarDate } from "../notion/calendar-date.js";
 import { isQuizAssignment } from "./quiz-classifier.js";
@@ -14,7 +14,7 @@ import { isQuizAssignment } from "./quiz-classifier.js";
 /**
  * Sync pipeline per run:
  *   Canvas → SQLite (canonical mirror + snapshots) → Notion (projection)
- * Only pushes to Notion what actually changed since the last observation.
+ * Pending projections survive failed attempts and unchanged Canvas observations.
  */
 
 export interface SyncResult {
@@ -34,7 +34,6 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
 
   const canvas = new CanvasClient(config.canvasDomain, resolveAuth());
   const notionClient = notion();
-  const dbIds = savedDbIds();
 
   // Watermark: only fetch assignments updated since last good run (unless full).
   const since = opts.full ? undefined : lastSuccessfulSyncStart();
@@ -71,24 +70,33 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
           assignmentsSeen++;
           try {
             const submission = await fetchSubmission(canvas, a, user.id);
-            const result = upsertAssignment(toInput(a, submission, groups, courseTimeZones.get(courseId) ?? null));
-            const row = getAssignment(a.id);
-            if (!row) continue;
-
-            // A full sync also re-projects unchanged rows. This lets projection
-            // improvements (such as calendar titles) update existing pages.
-            if (opts.full || result.isNew || result.changedFields.length > 0) {
-              const push = await upsertAssignmentPage(notionClient, row, config.canvasDomain, {
-                isNew: result.isNew,
-                changedFields: result.changedFields,
-                coursePageId: coursePageIds.get(courseId) ?? null,
-                courseLabel: courseRow.course_code?.trim() || courseRow.name,
-                forceDetails: Boolean(opts.full),
-              });
-              if (push.pushed) changesPushed++;
-            }
+            upsertAssignment(toInput(a, submission, groups, courseTimeZones.get(courseId) ?? null), {
+              forceProjection: opts.full,
+            });
           } catch (e) {
             errors.push(`assignment ${a.id} (${a.name}): ${errText(e)}`);
+          }
+        }
+
+        // Drain durable work independently of the incremental Canvas response.
+        // A failed push or Do Not Sync skip keeps its pending state for later.
+        for (const pending of pendingProjectionsForCourse(courseId)) {
+          try {
+            const row = getAssignment(pending.assignment_id);
+            if (!row) continue;
+            const push = await upsertAssignmentPage(notionClient, row, config.canvasDomain, {
+              isNew: Boolean(pending.is_new),
+              changedFields: JSON.parse(pending.changed_fields) as string[],
+              coursePageId: coursePageIds.get(courseId) ?? null,
+              courseLabel: courseRow.course_code?.trim() || courseRow.name,
+              forceDetails: Boolean(pending.force_details),
+            });
+            if (push.pushed) {
+              completeProjection(pending);
+              changesPushed++;
+            }
+          } catch (e) {
+            errors.push(`assignment ${pending.assignment_id}: ${errText(e)}`);
           }
         }
       } catch (e) {
