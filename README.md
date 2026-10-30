@@ -56,10 +56,13 @@ full sync is needed to reconcile those older gaps. Keep the SQLite database on
 persistent storage and run only one sync writer.
 
 Delivery is at least once: if Notion accepts a write but its response is lost,
-a retry can repeat an activity entry. This change does not make the existing
-page-body replacement transactional; it currently deletes and rebuilds Notes
-blocks too, so interruption during replacement can lose user content. Resolve
-that separately before unattended deployment.
+a retry can repeat an activity entry. Details refreshes insert the complete new
+section before removing old Details blocks, so an interruption can temporarily
+leave duplicate details until the next successful retry. Notes and Activity
+blocks retain their original IDs and nested content: sync never deletes or
+rebuilds them. Existing pages missing the `🗒️ Notes` heading fail closed; restore
+that heading at the ownership boundary before retrying. Only empty pages receive
+a new Notes section automatically.
 
 ## Setup
 

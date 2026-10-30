@@ -67,7 +67,7 @@ beforeEach(() => {
         const body = JSON.parse(String(init?.body));
         const kind = body.children[0]?.type === "paragraph" ? "activity" : "details";
         assignmentWrites.push({ kind, body });
-        return fail === kind ? failure() : json({ results: [] });
+        return fail === kind ? failure() : json({ results: body.children.map((b: object, i: number) => ({ ...b, id: `block-${i}` })) });
       }
     }
     throw new Error(`Unexpected mocked request: ${init?.method} ${url.pathname}`);
