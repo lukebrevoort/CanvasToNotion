@@ -213,3 +213,41 @@ test("readback accepts rendered details with rich text, links and API metadata",
   f.assertProtected();
   assert.equal(f.state.filter(b => text(b) === DETAILS_HEADING).length, 1);
 });
+
+const originalUrl = "https://example.com/a%2Fb?key=a:b&other=two+words#section";
+for (const [label, url, accepted] of [
+  ["query percent encoding", "https://example.com/a%2Fb?key=a%3Ab&other=two%20words#section", true],
+  ["different host", "https://other.example/a%2Fb?key=a%3Ab&other=two%20words#section", false],
+  ["different protocol", "http://example.com/a%2Fb?key=a%3Ab&other=two%20words#section", false],
+  ["decoded path separator", "https://example.com/a/b?key=a%3Ab&other=two%20words#section", false],
+  ["different fragment", "https://example.com/a%2Fb?key=a%3Ab&other=two%20words#different", false],
+  ["reordered parameters", "https://example.com/a%2Fb?other=two%20words&key=a%3Ab#section", false],
+  ["extra duplicate parameter", "https://example.com/a%2Fb?key=a%3Ab&other=two%20words&key=a%3Ab#section", false],
+  ["different value", "https://example.com/a%2Fb?key=different&other=two%20words#section", false],
+  ["encoded literal plus", "https://example.com/a%2Fb?key=a%3Ab&other=two%2Bwords#section", false],
+  ["malformed query escape", "https://example.com/a%2Fb?key=a%ZZb&other=two%20words#section", false],
+] as const) {
+  test(`readback ${accepted ? "accepts" : "rejects"} URL ${label}`, async () => {
+    const f = fixture(original(), undefined, "empty");
+    const details = replacement(0);
+    details.push({ type: "paragraph", paragraph: { rich_text: [
+      { type: "text", text: { content: "Linked text", link: { url: originalUrl } } },
+    ] } } as any);
+    const list = f.client.blocks.children.list;
+    f.client.blocks.children.list = (async (args: any) => {
+      const response = await list(args);
+      for (const b of response.results as any[]) {
+        for (const rich of b[b.type]?.rich_text ?? []) {
+          if (rich.text?.link?.url === originalUrl) rich.text.link.url = url;
+        }
+      }
+      return response;
+    }) as any;
+    if (accepted) await replaceDetailsSection(f.client, "page", details);
+    else {
+      await assert.rejects(replaceDetailsSection(f.client, "page", details), /Incomplete Details append readback/);
+      assert.equal(f.counts.delete, 0);
+    }
+    f.assertProtected();
+  });
+}

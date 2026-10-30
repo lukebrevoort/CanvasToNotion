@@ -328,15 +328,46 @@ function blockText(block: { type?: string; [k: string]: unknown }): string {
 }
 
 /** Match supplied fields only: Notion adds IDs, timestamps and default styling. */
-function matchesRequest(expected: unknown, observed: unknown): boolean {
+function matchesRequest(expected: unknown, observed: unknown, fieldPath = ""): boolean {
+  if (typeof expected === "string" && typeof observed === "string" &&
+      /\.rich_text\[\]\.text\.link\.url$/.test(fieldPath)) {
+    return equivalentRichTextUrl(expected, observed);
+  }
   if (Array.isArray(expected)) {
     return Array.isArray(observed) && expected.length === observed.length &&
-      expected.every((value, index) => matchesRequest(value, observed[index]));
+      expected.every((value, index) => matchesRequest(value, observed[index], `${fieldPath}[]`));
   }
   if (expected !== null && typeof expected === "object") {
     return observed !== null && typeof observed === "object" &&
       Object.entries(expected).every(([key, value]) =>
-        matchesRequest(value, (observed as Record<string, unknown>)[key]));
+        matchesRequest(value, (observed as Record<string, unknown>)[key], `${fieldPath}.${key}`));
   }
   return expected === observed;
+}
+
+/** Notion may percent-encode query characters in persisted rich-text URLs.
+ * Compare only that demonstrated normalization; never normalize destinations,
+ * encoded paths, fragments, parameter order, duplicate keys or malformed UTF-8.
+ */
+function equivalentRichTextUrl(expected: string, observed: string): boolean {
+  if (expected === observed) return true;
+  const parts = (value: string) => {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const match = /^(https?:\/\/[^?#]+)\?([^#]*)(#.*)?$/.exec(value);
+    if (!match) return null;
+    const query = match[2]!.split("&").map(parameter => {
+      const equal = parameter.indexOf("=");
+      const decode = (part: string) => decodeURIComponent(part.replace(/\+/g, " "));
+      return [equal >= 0, decode(equal >= 0 ? parameter.slice(0, equal) : parameter),
+        equal >= 0 ? decode(parameter.slice(equal + 1)) : ""];
+    });
+    return [match[1], query, match[3] ?? ""];
+  };
+  try {
+    const left = parts(expected), right = parts(observed);
+    return left !== null && right !== null && JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
