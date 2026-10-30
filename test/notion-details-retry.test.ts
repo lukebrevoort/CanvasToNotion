@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Client } from "@notionhq/client";
-import { ACTIVITY_HEADING, DETAILS_HEADING, NOTES_HEADING, replaceDetailsSection } from "../src/notion/blocks.js";
+import { ACTIVITY_HEADING, DETAILS_HEADING, NOTES_HEADING, detailsBlocks, replaceDetailsSection } from "../src/notion/blocks.js";
 
 type Block = { id: string; type: string; [key: string]: any };
 const block = (id: string, text: string, type = "paragraph"): Block => ({
@@ -23,7 +23,7 @@ const original = () => [
 ];
 
 type Failure = { operation: "append" | "delete" | "list"; call: number; after?: boolean };
-function fixture(seed = original(), failure?: Failure) {
+function fixture(seed = original(), failure?: Failure, responseMode?: "truncated" | "empty" | "excess" | "partial" | "wrong-content") {
   const state = structuredClone(seed);
   const protectedBlocks = structuredClone(seed.filter(b => !["details", "old-a", "old-b"].includes(b.id)));
   const counts = { append: 0, delete: 0, list: 0 };
@@ -56,8 +56,13 @@ function fixture(seed = original(), failure?: Failure) {
           index++;
         }
         const created = children.map(b => ({ ...structuredClone(b), id: `created-${++sequence}` }) as Block);
+        if (responseMode === "partial") created.pop();
+        if (responseMode === "wrong-content" && created[0]) created[0] = block(created[0].id, "Unexpected content");
         state.splice(index, 0, ...created);
         check("append", true); // Simulate a committed write with a lost response.
+        if (responseMode === "truncated") return { results: structuredClone(created.slice(0, 1)), has_more: true };
+        if (responseMode === "empty" || responseMode === "partial" || responseMode === "wrong-content") return { results: [] };
+        if (responseMode === "excess") return { results: structuredClone(state) };
         return { results: structuredClone(created) };
       },
     },
@@ -155,4 +160,56 @@ test("initialization survives a lost response and preserves notes written before
   assert.equal(f.state.filter(b => text(b) === NOTES_HEADING).length, 1);
   assert.equal(f.state.find(b => text(b) === NOTES_HEADING)?.id, notesHeadingId);
   assert.deepEqual(f.state.find(b => b.id === note.id), note);
+});
+
+for (const mode of ["truncated", "empty", "excess"] as const) {
+  test(`verifies persisted Details after ${mode} append response across chunks`, async () => {
+    const f = fixture(original(), undefined, mode);
+    await replaceDetailsSection(f.client, "page", replacement(100));
+    f.assertProtected();
+    const start = f.state.findIndex(b => text(b) === DETAILS_HEADING);
+    const end = f.state.findIndex(b => b.id === "notes");
+    assert.deepEqual(f.state.slice(start + 1, end).map(text),
+      Array.from({ length: 100 }, (_, i) => `new detail ${i}`));
+    assert.equal(f.state.filter(b => text(b) === DETAILS_HEADING).length, 1);
+  });
+}
+for (const mode of ["partial", "wrong-content"] as const) {
+  test(`keeps all old Details when readback reveals ${mode} insertion`, async () => {
+    const f = fixture(original(), undefined, mode);
+    await assert.rejects(replaceDetailsSection(f.client, "page", replacement()), /Incomplete Details append readback/);
+    assert.equal(f.counts.delete, 0);
+    f.assertProtected();
+    for (const id of ["details", "old-a", "old-b"]) assert.ok(f.state.some(b => b.id === id));
+  });
+}
+test("failed append readback does not delete old Details", async () => {
+  const f = fixture(original(), { operation: "list", call: 2 }, "empty");
+  await assert.rejects(replaceDetailsSection(f.client, "page", replacement()), /simulated interruption/);
+  assert.equal(f.counts.delete, 0);
+  f.assertProtected();
+});
+test("retry removes prior duplicate managed sections, including identical Details", async () => {
+  const f = fixture(original(), { operation: "append", call: 1, after: true }, "excess");
+  await assert.rejects(replaceDetailsSection(f.client, "page", replacement()), /simulated interruption/);
+  await replaceDetailsSection(f.client, "page", replacement());
+  f.assertProtected();
+  assert.equal(f.state.filter(b => text(b) === DETAILS_HEADING).length, 1);
+  assert.equal(f.state.filter(b => text(b) === "new detail 0").length, 1);
+});
+
+test("readback accepts rendered details with rich text, links and API metadata", async () => {
+  const f = fixture(original(), undefined, "empty");
+  const details = detailsBlocks({
+    canvas_id: 1, course_id: 2, points_possible: 5,
+    description_html: '<p>Read <strong>carefully</strong> and <a href="https://example.com/">follow this link</a>.</p>',
+  } as any, { status: "Not started", canvasDomain: "example.instructure.com" });
+  const list = f.client.blocks.children.list;
+  f.client.blocks.children.list = (async (args: any) => {
+    const response = await list(args);
+    return { ...response, results: response.results.map(b => ({ ...b, created_time: "now", archived: false })) };
+  }) as any;
+  await replaceDetailsSection(f.client, "page", details);
+  f.assertProtected();
+  assert.equal(f.state.filter(b => text(b) === DETAILS_HEADING).length, 1);
 });

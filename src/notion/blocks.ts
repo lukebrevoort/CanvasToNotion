@@ -245,14 +245,22 @@ export async function replaceDetailsSection(
     throw new Error("Replacement details must start with the Assignment Details heading");
   }
 
-  const results: (Block & { id: string })[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await client.blocks.children.list({ block_id: pageId, page_size: 100, start_cursor: cursor });
-    results.push(...page.results as (Block & { id: string })[]);
-    if (page.has_more && !page.next_cursor) throw new Error("Incomplete Notion block pagination");
-    cursor = page.has_more ? page.next_cursor! : undefined;
-  } while (cursor);
+  const listChildren = async (): Promise<(Block & { id: string })[]> => {
+    const blocks: (Block & { id: string })[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await client.blocks.children.list({ block_id: pageId, page_size: 100, start_cursor: cursor });
+      blocks.push(...page.results as (Block & { id: string })[]);
+      if (page.has_more && (!page.next_cursor || cursors.has(page.next_cursor))) {
+        throw new Error("Incomplete Notion block pagination");
+      }
+      cursor = page.has_more ? page.next_cursor! : undefined;
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return blocks;
+  };
+  const results = await listChildren();
 
   // Only an empty page can safely be initialized without a known ownership
   // boundary. On an existing page, a missing/renamed Notes heading needs repair.
@@ -286,11 +294,25 @@ export async function replaceDetailsSection(
       children: children as any,
       position: after ? { type: "after_block", after_block: { id: after } } : { type: "start" },
     });
-    const lastId = appended.results.at(-1)?.id;
-    if (appended.results.length !== children.length || !lastId) {
-      throw new Error("Incomplete Details append response; keeping previous details");
+    let created: { id: string }[] = appended.results;
+    const knownIds = new Set(results.map(b => b.id));
+    // Append responses are paginated and need not include every created block.
+    // Never infer success from the count alone or anchor to an existing block.
+    if (appended.has_more || created.length !== children.length ||
+        created.some(b => !b.id || knownIds.has(b.id)) ||
+        new Set(created.map(b => b.id)).size !== children.length) {
+      const observed = await listChildren();
+      const start = after ? observed.findIndex(b => b.id === after) + 1 : 0;
+      const end = observed.findIndex(b => b.id === results[insertIndex]!.id);
+      const inserted = observed.slice(start, end);
+      if ((after && start === 0) || end < start || inserted.length !== children.length ||
+          inserted.some((b, index) => !b.id || knownIds.has(b.id) || !matchesRequest(children[index], b)) ||
+          new Set(inserted.map(b => b.id)).size !== children.length) {
+        throw new Error("Incomplete Details append readback; keeping previous details");
+      }
+      created = inserted;
     }
-    after = lastId;
+    after = created.at(-1)!.id;
   }
 
   // Keep the old heading until all of its contents have been removed. On retry,
@@ -303,4 +325,18 @@ function blockText(block: { type?: string; [k: string]: unknown }): string {
   if (!t) return "";
   const data = block[t] as { rich_text?: { plain_text?: string; text?: { content?: string } }[] } | undefined;
   return (data?.rich_text ?? []).map((r) => r.plain_text ?? r.text?.content ?? "").join("");
+}
+
+/** Match supplied fields only: Notion adds IDs, timestamps and default styling. */
+function matchesRequest(expected: unknown, observed: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return Array.isArray(observed) && expected.length === observed.length &&
+      expected.every((value, index) => matchesRequest(value, observed[index]));
+  }
+  if (expected !== null && typeof expected === "object") {
+    return observed !== null && typeof observed === "object" &&
+      Object.entries(expected).every(([key, value]) =>
+        matchesRequest(value, (observed as Record<string, unknown>)[key]));
+  }
+  return expected === observed;
 }

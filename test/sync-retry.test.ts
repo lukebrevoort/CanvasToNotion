@@ -29,6 +29,7 @@ let observed = [assignment()];
 let frozen = false;
 let fail: "properties" | "details" | "activity" | undefined;
 let assignmentWrites: { kind: string; body: any }[] = [];
+let blockSequence = 0;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "Content-Type": "application/json" },
@@ -67,7 +68,7 @@ beforeEach(() => {
         const body = JSON.parse(String(init?.body));
         const kind = body.children[0]?.type === "paragraph" ? "activity" : "details";
         assignmentWrites.push({ kind, body });
-        return fail === kind ? failure() : json({ results: body.children.map((b: object, i: number) => ({ ...b, id: `block-${i}` })) });
+        return fail === kind ? failure() : json({ results: body.children.map((b: object, i: number) => ({ ...b, id: `block-${++blockSequence}` })) });
       }
     }
     throw new Error(`Unexpected mocked request: ${init?.method} ${url.pathname}`);
