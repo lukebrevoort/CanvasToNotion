@@ -41,6 +41,26 @@ Canvas ──→ SQLite (canonical mirror + snapshots) ──→ Notion (project
 
 `Do Not Sync` ✅ freezes a page completely (use instead of the old "Dont show" status).
 
+## Retry behavior
+
+Assignment observations, snapshots, and pending Notion projections commit in one
+SQLite transaction. A failed projection stays pending until its properties, details,
+and activity writes all finish successfully. Incremental runs retry pending work
+for currently observed courses even when Canvas returns no updated assignments.
+`Do Not Sync` pages remain pending without writes and catch up after the flag is
+cleared. Full syncs also queue unchanged assignments to refresh their details.
+
+The store adds `pending_assignment_projections` on initialization. It cannot infer
+which projections failed before this tracking existed; an explicitly requested
+full sync is needed to reconcile those older gaps. Keep the SQLite database on
+persistent storage and run only one sync writer.
+
+Delivery is at least once: if Notion accepts a write but its response is lost,
+a retry can repeat an activity entry. This change does not make the existing
+page-body replacement transactional; it currently deletes and rebuilds Notes
+blocks too, so interruption during replacement can lose user content. Resolve
+that separately before unattended deployment.
+
 ## Setup
 
 ```bash

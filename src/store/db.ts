@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 
 /**
@@ -81,6 +82,16 @@ CREATE TABLE IF NOT EXISTS snapshots (
   data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_assignment ON snapshots(assignment_id);
+
+-- Observations and pending projections commit together. Failed or frozen
+-- projections remain here even after the Canvas watermark advances.
+CREATE TABLE IF NOT EXISTS pending_assignment_projections (
+  assignment_id INTEGER PRIMARY KEY REFERENCES assignments(canvas_id),
+  revision TEXT NOT NULL,
+  is_new INTEGER NOT NULL,
+  changed_fields TEXT NOT NULL,
+  force_details INTEGER NOT NULL
+);
 `);
 
 // Existing installations predate calendar_due_at. Backfill the exact Canvas
@@ -233,9 +244,12 @@ export interface UpsertResult {
 
 /**
  * Writes an observed assignment state. Snapshots when anything we track changed.
- * Returns whether Notion needs a push (new or changed).
+ * Atomically queues new/changed rows, or unchanged rows requested by a full sync.
  */
-export function upsertAssignment(input: AssignmentInput): UpsertResult {
+export const upsertAssignment = db.transaction((
+  input: AssignmentInput,
+  opts: { forceProjection?: boolean } = {},
+): UpsertResult => {
   const row = getAssignmentStmt.get(input.canvas_id) as AssignmentRow | undefined;
   const bool = (v: boolean | null | undefined): number | null => (v == null ? null : v ? 1 : 0);
   const record = {
@@ -250,18 +264,61 @@ export function upsertAssignment(input: AssignmentInput): UpsertResult {
   if (!row) {
     insertAssignmentStmt.run(record);
     insertSnapshotStmt.run(input.canvas_id, now(), JSON.stringify(["__new__"]), JSON.stringify(record));
+    queueProjection(input.canvas_id, true, ["__new__"], Boolean(opts.forceProjection));
     return { isNew: true, changedFields: ["__new__"] };
   }
 
   const changed = DIFF_FIELDS.filter((f) => !deepEq(row[f], record[f]));
   if (changed.length === 0) {
     db.prepare("UPDATE assignments SET last_seen_at = ? WHERE canvas_id = ?").run(record.ts, input.canvas_id);
+    if (opts.forceProjection) queueProjection(input.canvas_id, false, [], true);
     return { isNew: false, changedFields: [] };
   }
 
   updateAssignmentStmt.run(record);
   insertSnapshotStmt.run(input.canvas_id, now(), JSON.stringify(changed), JSON.stringify(record));
+  queueProjection(input.canvas_id, false, [...changed], Boolean(opts.forceProjection));
   return { isNew: false, changedFields: [...changed] };
+});
+
+export interface PendingProjection {
+  assignment_id: number;
+  revision: string;
+  is_new: number;
+  changed_fields: string;
+  force_details: number;
+}
+
+function queueProjection(id: number, isNew: boolean, changedFields: string[], forceDetails: boolean): void {
+  const previous = db.prepare("SELECT * FROM pending_assignment_projections WHERE assignment_id = ?")
+    .get(id) as PendingProjection | undefined;
+  const fields = [...new Set<string>([
+    ...(previous ? JSON.parse(previous.changed_fields) as string[] : []),
+    ...changedFields,
+  ])];
+  db.prepare(`
+    INSERT INTO pending_assignment_projections (assignment_id, revision, is_new, changed_fields, force_details)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(assignment_id) DO UPDATE SET
+      revision = excluded.revision, is_new = excluded.is_new,
+      changed_fields = excluded.changed_fields, force_details = excluded.force_details
+  `).run(id, randomUUID(), Number(isNew || Boolean(previous?.is_new)), JSON.stringify(fields),
+    Number(forceDetails || Boolean(previous?.force_details)));
+}
+
+/** Only retry courses observed in this run; concluded courses stay untouched. */
+export function pendingProjectionsForCourse(courseId: number): PendingProjection[] {
+  return db.prepare(`
+    SELECT p.* FROM pending_assignment_projections p
+    JOIN assignments a ON a.canvas_id = p.assignment_id
+    WHERE a.course_id = ? ORDER BY p.assignment_id
+  `).all(courseId) as PendingProjection[];
+}
+
+/** A completed older attempt must not acknowledge a newer observation. */
+export function completeProjection(pending: PendingProjection): void {
+  db.prepare("DELETE FROM pending_assignment_projections WHERE assignment_id = ? AND revision = ?")
+    .run(pending.assignment_id, pending.revision);
 }
 
 export function getAssignment(id: number): AssignmentRow | undefined {
