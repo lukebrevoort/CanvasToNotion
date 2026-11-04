@@ -301,3 +301,18 @@ test("initialization and admission storage failures quarantine the instance with
   await assert.rejects(restarted.admit({ ...request, runId: "another" }), code("uncertain"));
   assert.equal(storage.durable!.activeRunId, request.runId);
 });
+
+test("auth preflight verifies local admission without issuing or clearing work", async () => {
+  const {storage,journal}=await fixture(); const handle=await journal.admit(request);
+  const before=await journal.inspect(); await journal.assertOwnedAdmission(handle);
+  assert.deepEqual(await journal.inspect(),before);
+  await assert.rejects(new SingleWriterJournal(storage).assertOwnedAdmission(handle),code("inactive"));
+  await assert.rejects(journal.assertOwnedAdmission({...handle,generation:1}),code("generation"));
+  await journal.execute(handle,intent,async()=>receipt); await journal.assertOwnedAdmission(handle);
+  await journal.finish(handle); await assert.rejects(journal.assertOwnedAdmission(handle));
+});
+test("uncertain journal forbids auth freshness preflight", async () => {
+  const {journal}=await fixture(); const handle=await journal.admit(request);
+  await assert.rejects(journal.execute(handle,intent,async()=>{throw Error("dummy lost receipt");}));
+  await assert.rejects(journal.assertOwnedAdmission(handle),code("uncertain"));
+});

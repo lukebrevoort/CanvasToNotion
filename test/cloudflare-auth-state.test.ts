@@ -39,14 +39,14 @@ const initial = { accessToken: "dummy-access-0", refreshToken: "dummy-refresh-0"
 const response = { accessToken: "dummy-access-1", expiresAt: 234567 };
 const context = (generation: number) => ({ schemaVersion: 1 as const, binding: scope, generation });
 const errorCode = (code: string) => (error: unknown) => error instanceof AuthStateError && error.code === code && !error.message.includes("private");
-async function fixture() {
+async function fixture(syntheticScope = scope) {
   const key = await crypto.subtle.importKey("raw", new Uint8Array(32).fill(7), "AES-GCM", false, ["encrypt", "decrypt"]);
   const cipher = createSyntheticAesGcmCipher(key), storage = new AuthMemory(), journalStorage = new JournalMemory();
-  const auth = new SyntheticAuthStateAdapter({ scope, storage, cipher });
+  const auth = new SyntheticAuthStateAdapter({ scope: syntheticScope, storage, cipher });
   await auth.initialize(initial);
   const journal = new SingleWriterJournal(journalStorage);
-  await journal.initialize(scope);
-  const handle = await journal.admit({ ...scope, runId: "dummy-run", expectedGeneration: 0 });
+  await journal.initialize(syntheticScope);
+  const handle = await journal.admit({ ...syntheticScope, runId: "dummy-run", expectedGeneration: 0 });
   const options = { expectedGeneration: 0, journal, handle, operationId: "dummy-refresh", requestDigest: "a".repeat(64), exchange: async () => response };
   return { auth, cipher, storage, journal, journalStorage, options };
 }
@@ -169,4 +169,127 @@ test("auth reservation durability failure dispatches no refresh and retains jour
   await assert.rejects(f.auth.refresh({ ...f.options, exchange: async () => { calls++; return response; } }), errorCode("uncertain"));
   assert.equal(calls, 0); assert.equal(f.storage.value!.status, "uncertain");
   assert.equal((await f.journal.inspect()).runs[0]!.status, "uncertain");
+});
+
+const clockOptions = { nowMs: () => 100_000, minValidityMs: 1000 };
+const accessIntent = { operationId: "SYNTHETIC_projection", kind: "write" as const, targetId: "SYNTHETIC_page", requestDigest: "b".repeat(64) };
+const safeReceipt = { receiptId: "SYNTHETIC_receipt" };
+const canonicalScope: SyntheticAuthScope = { syntheticOnly: true, accountId: "SYNTHETIC_account", sourceId: "SYNTHETIC_canvas", destinationId: "SYNTHETIC_notion" };
+
+test("canonical synthetic binding permits gated access only after durable journal intent", async () => {
+  const f = await fixture(canonicalScope); let calls = 0;
+  const result = await f.auth.withAccessToken({ ...f.options, ...clockOptions, intent: accessIntent, use: async token => {
+    calls++; assert.equal(token, initial.accessToken);
+    const state = await f.journal.inspect(); assert.equal(state.runs[0]!.status, "uncertain");
+    assert.equal(state.runs[0]!.operations[0]!.kind, "write");
+    return safeReceipt;
+  } });
+  assert.deepEqual(result, safeReceipt); assert.equal(calls, 1);
+  assert.equal(f.storage.value!.generation, 0);
+  assert(!JSON.stringify(await f.journal.inspect()).includes(initial.accessToken));
+  await f.journal.finish(f.options.handle);
+});
+
+test("gated callback is not replayed for an acknowledged operation", async () => {
+  const f = await fixture(); let calls = 0;
+  const options = { ...f.options, ...clockOptions, intent: accessIntent, use: async () => { calls++; return safeReceipt; } };
+  assert.deepEqual(await f.auth.withAccessToken(options), safeReceipt);
+  assert.deepEqual(await f.auth.withAccessToken(options), safeReceipt); assert.equal(calls, 1);
+});
+
+test("gated access rejects stale auth generation, mixed binding and refresh-kind intent before callback", async () => {
+  const f = await fixture(); let calls = 0;
+  const options = { ...f.options, ...clockOptions, intent: accessIntent, use: async () => { calls++; return safeReceipt; } };
+  await assert.rejects(f.auth.withAccessToken({ ...options, expectedGeneration: 1 }), errorCode("conflict"));
+  await assert.rejects(f.auth.withAccessToken({ ...options, intent: { ...accessIntent, kind: "refresh" } }), errorCode("invalid"));
+  await assert.rejects(f.auth.withAccessToken({ ...options, handle: { ...f.options.handle, accountId: "dummy-other" } }), errorCode("invalid"));
+  assert.throws(() => new SyntheticAuthStateAdapter({ scope: { ...canonicalScope, sourceId: scope.sourceId }, storage: f.storage, cipher: f.cipher }), errorCode("invalid"));
+  assert.equal(calls, 0);
+});
+
+test("uncertain access callback quarantines locally and journal blocks reconstructed access", async () => {
+  const f = await fixture(); let calls = 0;
+  await assert.rejects(f.auth.withAccessToken({ ...f.options, ...clockOptions, intent: accessIntent, use: async () => { calls++; throw Error(initial.accessToken); } }), errorCode("uncertain"));
+  assert.equal(f.storage.value!.status, "ready"); // Tokens did not rotate; journal owns effect uncertainty.
+  const reopened = new SyntheticAuthStateAdapter({ scope, storage: f.storage, cipher: f.cipher });
+  await assert.rejects(reopened.withAccessToken({ ...f.options, ...clockOptions, journal: new SingleWriterJournal(f.journalStorage), intent: accessIntent, use: async () => { calls++; return safeReceipt; } }), errorCode("uncertain"));
+  await assert.rejects(f.auth.refresh(f.options), errorCode("uncertain"));
+  assert.equal(calls, 1); assert(!JSON.stringify(await f.journal.inspect()).includes(initial.accessToken));
+});
+
+test("same journal prevents cross-adapter refresh while access callback is unsettled", async () => {
+  const f = await fixture(); let release!: () => void, entered!: () => void, refreshCalls = 0;
+  const wait = new Promise<void>(r => { release = r; }), started = new Promise<void>(r => { entered = r; });
+  const operation = f.auth.withAccessToken({ ...f.options, ...clockOptions, intent: accessIntent, use: async () => { entered(); await wait; return safeReceipt; } });
+  await started;
+  const sibling = new SyntheticAuthStateAdapter({ scope, storage: f.storage, cipher: f.cipher });
+  await assert.rejects(sibling.refresh({ ...f.options, exchange: async () => { refreshCalls++; return response; } }), errorCode("uncertain"));
+  await assert.rejects(f.auth.refresh(f.options), errorCode("busy"));
+  release(); await operation; assert.equal(refreshCalls, 0);
+});
+
+test("gated access refuses to persist callback receipt containing either token", async () => {
+  for (const token of [initial.accessToken, initial.refreshToken]) {
+    const f = await fixture();
+    await assert.rejects(f.auth.withAccessToken({ ...f.options, ...clockOptions, intent: accessIntent, use: async () => ({ receiptId: "dummy-receipt-" + token }) }), errorCode("uncertain"));
+    assert(!JSON.stringify(await f.journal.inspect()).includes(token));
+  }
+});
+
+test("gated access refuses before callback after decrypt-time auth drift", async () => {
+  const f = await fixture(); let calls = 0;
+  const cipher: SyntheticAuthCipher = { ...f.cipher, open: async (envelope, ctx) => {
+    const tokens = await f.cipher.open(envelope, ctx);
+    f.storage.value!.generation = 1;
+    return tokens;
+  } };
+  const auth = new SyntheticAuthStateAdapter({ scope, storage: f.storage, cipher });
+  await assert.rejects(auth.withAccessToken({ ...f.options, ...clockOptions, intent: accessIntent, use: async () => { calls++; return safeReceipt; } }), errorCode("uncertain"));
+  assert.equal(calls, 0);
+});
+
+test("known expired token records no intent, dispatches no effect, and allows explicit refresh", async () => {
+  const f = await fixture(); let calls = 0;
+  await assert.rejects(f.auth.withAccessToken({ ...f.options, intent: accessIntent, nowMs: () => initial.expiresAt, minValidityMs: 0, use: async () => { calls++; return safeReceipt; } }), errorCode("expired"));
+  const beforeRefresh = await f.journal.inspect();
+  assert.equal(beforeRefresh.runs[0]!.status, "admitted"); assert.equal(beforeRefresh.runs[0]!.operations.length, 0);
+  assert.equal((await f.auth.inspect()).locallyQuarantined, false); assert.equal(calls, 0);
+  await f.auth.refresh(f.options);
+  await f.auth.withAccessToken({ ...f.options, expectedGeneration: 1, intent: accessIntent, nowMs: () => initial.expiresAt, minValidityMs: 1000, use: async token => { assert.equal(token, response.accessToken); calls++; return safeReceipt; } });
+  assert.equal(calls, 1);
+});
+
+test("positive exact validity boundary passes; insufficient validity and expired boundary refuse", async () => {
+  for (const [now, margin, passes] of [[initial.expiresAt - 1000, 1000, true], [initial.expiresAt - 999, 1000, false], [initial.expiresAt, 0, false], [initial.expiresAt + 1, 0, false]] as const) {
+    const f = await fixture(); let calls = 0;
+    const operation = f.auth.withAccessToken({ ...f.options, intent: accessIntent, nowMs: () => now, minValidityMs: margin, use: async () => { calls++; return safeReceipt; } });
+    if (passes) await operation; else await assert.rejects(operation, errorCode("expired"));
+    assert.equal(calls, passes ? 1 : 0);
+  }
+});
+
+test("nonfinite, negative, fractional and excessive freshness values fail without intent", async () => {
+  for (const [now, margin] of [[NaN, 0], [Infinity, 0], [-1, 0], [1.5, 0], [0, NaN], [0, Infinity], [0, -1], [0, 0.5], [0, 300001]]) {
+    const f = await fixture(); let calls = 0;
+    await assert.rejects(f.auth.withAccessToken({ ...f.options, intent: accessIntent, nowMs: () => now!, minValidityMs: margin!, use: async () => { calls++; return safeReceipt; } }), errorCode("invalid"));
+    assert.equal(calls, 0); assert.equal((await f.journal.inspect()).runs[0]!.operations.length, 0);
+  }
+});
+
+test("clock advancing during gated decrypt refuses dispatch and retains conservative uncertainty", async () => {
+  const f = await fixture(); let now = initial.expiresAt - 2000, decrypts = 0, calls = 0;
+  const cipher: SyntheticAuthCipher = { ...f.cipher, open: async (envelope, ctx) => {
+    const tokens = await f.cipher.open(envelope, ctx); if (++decrypts === 2) now = initial.expiresAt; return tokens;
+  } };
+  const auth = new SyntheticAuthStateAdapter({ scope, storage: f.storage, cipher });
+  await assert.rejects(auth.withAccessToken({ ...f.options, intent: accessIntent, nowMs: () => now, minValidityMs: 1000, use: async () => { calls++; return safeReceipt; } }), errorCode("uncertain"));
+  assert.equal(calls, 0); assert.equal((await f.journal.inspect()).runs[0]!.status, "uncertain");
+});
+
+test("reconstructed admission cannot even decrypt access-token freshness", async () => {
+  const f = await fixture(); let decrypts = 0;
+  const cipher: SyntheticAuthCipher = { ...f.cipher, open: async (envelope, ctx) => { decrypts++; return f.cipher.open(envelope, ctx); } };
+  const auth = new SyntheticAuthStateAdapter({ scope, storage: f.storage, cipher });
+  await assert.rejects(auth.withAccessToken({ ...f.options, ...clockOptions, journal: new SingleWriterJournal(f.journalStorage), intent: accessIntent, use: async () => safeReceipt }), errorCode("uncertain"));
+  assert.equal(decrypts, 0);
 });

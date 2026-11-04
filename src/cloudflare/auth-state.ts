@@ -5,11 +5,11 @@
  * persistence but before receipt acknowledgment leaves the journal uncertain.
  * There is no recovery/reset API. Do not dispatch refresh outside the journal.
  */
-import type { EffectReceipt, JournalBinding, RunHandle, SingleWriterJournal } from "./journal.js";
+import type { EffectReceipt, JournalBinding, OperationIntent, RunHandle, SingleWriterJournal } from "./journal.js";
 
 export interface SyntheticAuthScope extends JournalBinding { syntheticOnly: true }
-export interface SyntheticTokens { accessToken: string; refreshToken: string; expiresAt: number }
-export interface SyntheticRefreshResponse { accessToken: string; refreshToken?: string; expiresAt: number }
+export interface SyntheticTokens { accessToken: string; refreshToken: string; /** Absolute Unix epoch milliseconds. */ expiresAt: number }
+export interface SyntheticRefreshResponse { accessToken: string; refreshToken?: string; /** Absolute Unix epoch milliseconds. */ expiresAt: number }
 export interface AuthCipherContext { schemaVersion: 1; binding: SyntheticAuthScope; generation: number }
 export interface EncryptedAuthEnvelope { algorithm: "AES-GCM"; iv: string; ciphertext: string }
 export interface SyntheticAuthCipher {
@@ -31,7 +31,7 @@ export interface AuthStateStorage {
   transaction<T>(callback: (transaction: AuthStateTransaction) => T): Promise<T>;
 }
 export class AuthStateError extends Error {
-  constructor(readonly code: "invalid" | "conflict" | "uncertain" | "busy") {
+  constructor(readonly code: "invalid" | "conflict" | "uncertain" | "busy" | "expired") {
     super(`Synthetic auth state: ${code}`); this.name = "AuthStateError";
   }
 }
@@ -40,8 +40,10 @@ function checkGeneration(value: number) {
   if (!Number.isSafeInteger(value) || value < 0 || value >= Number.MAX_SAFE_INTEGER - 1) fail("invalid");
 }
 function scopeCopy(value: SyntheticAuthScope): SyntheticAuthScope {
-  if (value?.syntheticOnly !== true || !/^dummy-[a-zA-Z0-9_-]{1,80}$/.test(value.accountId) ||
-      value.sourceId !== "canvas.invalid" || !/^dummy-[a-zA-Z0-9_-]{1,80}$/.test(value.destinationId)) fail("invalid");
+  if (value?.syntheticOnly !== true) fail("invalid");
+  const canonical = value.accountId === "SYNTHETIC_account" && value.sourceId === "SYNTHETIC_canvas" && value.destinationId === "SYNTHETIC_notion";
+  const dummy = /^dummy-[a-zA-Z0-9_-]{1,80}$/.test(value.accountId) && value.sourceId === "canvas.invalid" && /^dummy-[a-zA-Z0-9_-]{1,80}$/.test(value.destinationId);
+  if (!canonical && !dummy) fail("invalid");
   return { syntheticOnly: true, accountId: value.accountId, sourceId: value.sourceId, destinationId: value.destinationId };
 }
 function checkedTokens(value: SyntheticTokens): SyntheticTokens {
@@ -94,6 +96,83 @@ export class SyntheticAuthStateAdapter {
   async inspect(): Promise<{ generation: number; status: "ready" | "uncertain"; locallyQuarantined: boolean }> {
     const value = await this.transact(transaction => this.state(transaction));
     return { generation: value.generation, status: value.status, locallyQuarantined: this.quarantined };
+  }
+  /** Access token is released only to an awaited trusted effect after durable
+   * journal intent. The callback must not retain tokens or start background work.
+   * No refresh token, raw response, header builder or token getter is exposed.
+   * Journal instance/storage must be the same authoritative binding as refresh.
+   */
+  async withAccessToken(options: {
+    expectedGeneration: number; journal: SingleWriterJournal; handle: RunHandle;
+    intent: OperationIntent;
+    /** Injected clock returning absolute Unix epoch milliseconds, sampled again before dispatch. */
+    nowMs: () => number;
+    /** Required remaining validity, from zero to five minutes inclusive. */
+    minValidityMs: number;
+    use: (accessToken: string) => Promise<EffectReceipt>;
+  }): Promise<EffectReceipt> {
+    if (this.quarantined) fail("uncertain");
+    if (this.busy) fail("busy");
+    checkGeneration(options.expectedGeneration);
+    if (!sameBinding(options.handle, this.scope) || options.intent?.kind !== "write" || typeof options.use !== "function") fail("invalid");
+    const expected = options.expectedGeneration, handle = structuredClone(options.handle);
+    const intent: OperationIntent = { operationId: options.intent.operationId, kind: "write", targetId: options.intent.targetId, requestDigest: options.intent.requestDigest };
+    const use = options.use, journal = options.journal;
+    const nowMs = options.nowMs, minValidityMs = options.minValidityMs;
+    if (typeof nowMs !== "function" || !Number.isSafeInteger(minValidityMs) || minValidityMs < 0 || minValidityMs > 300_000) fail("invalid");
+    const currentTime = () => {
+      let value: number;
+      try { value = nowMs(); } catch { return fail("invalid"); }
+      if (!Number.isSafeInteger(value) || value < 0) fail("invalid");
+      return value;
+    };
+    const assertValid = (tokens: SyntheticTokens) => {
+      const remaining = tokens.expiresAt - currentTime();
+      if (remaining <= 0 || remaining < minValidityMs) fail("expired");
+    };
+    currentTime();
+    const readReady = () => this.transact(transaction => {
+      if (this.quarantined) fail("uncertain");
+      const current = this.state(transaction);
+      if (current.status !== "ready") fail("uncertain");
+      if (current.generation !== expected) fail("conflict");
+      return current;
+    });
+    this.busy = true;
+    try {
+      // Preflight uses plaintext internally for expiry only. It exposes no token
+      // and records no effect intent, so known expiry can be explicitly refreshed.
+      // Read-only ownership check precedes even internal expiry decryption.
+      // execute rechecks admission after all preflight awaits.
+      await journal.assertOwnedAdmission(handle);
+      const preflight = await readReady();
+      let preflightTokens: SyntheticTokens;
+      try { preflightTokens = checkedTokens(await this.ports.cipher.open(preflight.envelope, this.context(expected))); }
+      catch { this.quarantined = true; throw new AuthStateError("uncertain"); }
+      assertValid(preflightTokens);
+      return await journal.execute(handle, intent, async () => {
+        try {
+          const previous = await readReady();
+          const tokens = checkedTokens(await this.ports.cipher.open(previous.envelope, this.context(expected)));
+          const assertSame = async () => {
+            const current = await readReady();
+            if (JSON.stringify(current.envelope) !== JSON.stringify(previous.envelope)) fail("conflict");
+          };
+          assertValid(tokens);
+          await assertSame();
+          assertValid(tokens);
+          const returned = await use(tokens.accessToken);
+          // Do not let the known token values become durable receipt identifiers.
+          const receiptId = returned?.receiptId;
+          if (typeof receiptId !== "string" || receiptId.includes(tokens.accessToken) || receiptId.includes(tokens.refreshToken)) fail("invalid");
+          await assertSame();
+          return { receiptId };
+        } catch { this.quarantined = true; throw new AuthStateError("uncertain"); }
+      });
+    } catch (error) {
+      if (error instanceof AuthStateError) throw error;
+      this.quarantined = true; throw new AuthStateError("uncertain");
+    } finally { this.busy = false; }
   }
   async refresh(options: {
     expectedGeneration: number; journal: SingleWriterJournal; handle: RunHandle;

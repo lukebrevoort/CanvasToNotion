@@ -57,6 +57,14 @@ binding, production database import or live Canvas/Notion transport here.
   digests and terminal journal receipts, resumes completed batches across restart,
   and refuses uncertain import/effect retries without duplicating dummy effects.
 
+- `mirror-storage.ts` persists revision transitions atomically and serializes
+  through durability acknowledgment. The additional workerd pipeline combines
+  this store, encrypted auth and the gate. Known token expiry is rejected before
+  any intent so an explicit refresh can proceed; token use rechecks freshness.
+  Provider receipt precedes mirror acknowledgment, which precedes journal finish
+  and aggregate readiness. Lost-effect restarts preserve pending work and refuse
+  another dispatch. Protected and Do Not Sync assignments remain unchanged.
+
 ## Tests
 
 Run `npm run typecheck` and `node --import tsx --test test/*.test.ts`.
@@ -85,10 +93,10 @@ credentials outside this journal.
 The coordinator closes aggregate admission for the composed import/batch fixture,
 not for arbitrary direct use of low-level ports. All component writes must occur
 inside its awaited callbacks, and its verifier must read exact durable evidence.
-Separate component queues are not independently a global lock. Production needs
-one authenticated orchestration entry point with no raw-port bypass and integrated
-mirror/auth/transport state. The auth prototype still has its own isolated fixture;
-production key access and header generation are deliberately absent.
+Separate component queues are not independently a global lock. The additional composed pipeline integrates encrypted auth refresh/use and durable
+mirror revisions under that gate. Production still needs one authenticated entry
+point with no raw-port bypass, real key provisioning and provider-specific
+transport. None of those production capabilities is enabled by these fixtures.
 
 Auth persistence precedes journal acknowledgment; a crash between those commits
 leaves that journal blocked even if the auth row says ready. Do not use auth state
@@ -133,3 +141,27 @@ objects can restart; persistent admission must guard both. Do not put a long
 network operation inside `blockConcurrencyWhile` as a substitute for the journal.
 
 - [Workers Web Crypto and AES-GCM](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)
+
+## Recurring operation design (not enabled)
+
+The pure `schedule.ts` policy starts at a 15-minute interval measured from a
+fully completed cycle (96 baseline polls per day). A verified terminal batch with
+remaining work may continue after 5 seconds. Missed polls coalesce instead of
+catching up in a burst. Active work holds its admission; uncertain or unverified
+state stops scheduling. Every wake must revalidate durable evidence and expected
+generation; alarm delivery itself is never permission to replay.
+
+Cloudflare alarms are at-least-once, may retry six times, and cancellation is
+best-effort. Workers Free cron CPU is 10 ms; Durable Objects have separate CPU
+limits. This is why a thin trigger and small durable batches are preferable to one
+long cron invocation. No quota fit is claimed until CPU, requests, row operations,
+duration and account-wide usage are measured.
+
+The V1 prototype also has deliberate history caps (1000 coordinator operations,
+64 KiB coordinator state, 1 MiB journal). At frequent polling these eventually
+stop progress, potentially much sooner than 1000 cycles when cycles have multiple
+batches. They must not be silently pruned: generation-bound deduplication and
+verified terminal retention need a separately tested contract before indefinite
+scheduled operation can be claimed.
+
+- [Durable Object free-tier quotas](https://developers.cloudflare.com/durable-objects/platform/pricing/)

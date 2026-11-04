@@ -199,6 +199,19 @@ export class SingleWriterJournal {
     return handle;
   }
 
+  /** Read-only local ownership check for internal auth freshness preflight.
+   * Does not authorize a later effect by itself; execute rechecks and persists
+   * its own intent after any intervening awaits. Reconstructed handles fail.
+   */
+  async assertOwnedAdmission(handleInput: RunHandle): Promise<void> {
+    const handle = checkedHandle(handleInput);
+    await this.transact(transaction => {
+      const run = activeRun(stateFrom(transaction), handle);
+      if (this.quarantined || run.status === "uncertain") throw new JournalError("uncertain", "Admission is unresolved");
+      if (!this.ownedRuns.has(handle.runId)) throw new JournalError("inactive", "Recovered handles cannot authorize effects");
+    });
+  }
+
   async execute(handleInput: RunHandle, intentInput: OperationIntent, effect: () => Promise<EffectReceipt>): Promise<EffectReceipt> {
     const handle = checkedHandle(handleInput);
     identifier(intentInput.operationId);
