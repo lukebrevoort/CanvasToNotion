@@ -229,73 +229,145 @@ export function activityBlock(entry: string): Block {
 }
 
 /**
- * Refreshes the sync-owned details section while preserving the user-owned
- * Notes section and the Activity log verbatim. Strategy: read the whole body,
- * capture Notes + Activity blocks, delete everything, re-append
- * [details, notes, activity] in stable order.
+ * Replace only the Details section. Notes (including nested children), Activity,
+ * and unrecognized content keep their original block IDs and are never copied.
+ * Insert the complete replacement first, then remove old Details in reverse
+ * order so its heading survives interrupted cleanup and bounds the next retry.
  */
 export async function replaceDetailsSection(
   client: Client,
   pageId: string,
   newDetails: Block[],
 ): Promise<void> {
-  const existing = await client.blocks.children.list({ block_id: pageId, page_size: 100 });
-  const results = existing.results as { id: string; type: string }[];
-
-  let zone: "details" | "notes" | "activity" = "details";
-  const notesBlocks: Block[] = [];
-  const activityBlocks: Block[] = [];
-
-  for (const b of results) {
-    const text = blockText(b);
-    if (text === NOTES_HEADING) {
-      zone = "notes";
-      notesBlocks.push(b as Block);
-      continue;
-    }
-    if (text === ACTIVITY_HEADING) {
-      zone = "activity";
-      activityBlocks.push(b as Block);
-      continue;
-    }
-    if (zone === "notes") notesBlocks.push(b as Block);
-    else if (zone === "activity") activityBlocks.push(b as Block);
-    // old details-zone blocks are dropped — fresh ones get appended below
+  const isHeading = (block: Block, text: string) =>
+    block.type === "heading_2" && blockText(block) === text;
+  if (!newDetails[0] || !isHeading(newDetails[0], DETAILS_HEADING)) {
+    throw new Error("Replacement details must start with the Assignment Details heading");
   }
 
-  // Delete everything, then rebuild in canonical order. Retrieved blocks carry
-  // read-only fields (id, archived, null icon, …) that append rejects — keep
-  // only the type payload.
-  const slim = (b: Block): Block => {
-    const t = b.type;
-    const payload = { ...b[t] };
-    if (payload.icon === null) delete payload.icon;
-    return { object: "block", type: t, [t]: payload };
+  const listChildren = async (): Promise<(Block & { id: string })[]> => {
+    const blocks: (Block & { id: string })[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await client.blocks.children.list({ block_id: pageId, page_size: 100, start_cursor: cursor });
+      blocks.push(...page.results as (Block & { id: string })[]);
+      if (page.has_more && (!page.next_cursor || cursors.has(page.next_cursor))) {
+        throw new Error("Incomplete Notion block pagination");
+      }
+      cursor = page.has_more ? page.next_cursor! : undefined;
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return blocks;
   };
-  for (const b of results) await client.blocks.delete({ block_id: b.id });
+  const results = await listChildren();
 
-  const append = async (blocks: Block[]) => {
-    for (let i = 0; i < blocks.length; i += 90) {
-      await client.blocks.children.append({ block_id: pageId, children: blocks.slice(i, i + 90) as any });
-    }
-  };
-
-  await append(newDetails);
-  if (notesBlocks.length === 0) {
-    await append([heading(2, NOTES_HEADING), {
-      object: "block",
-      type: "paragraph",
-      paragraph: { rich_text: richText("(write your notes here — sync never touches this section)") },
-    }]);
-  } else {
-    await append(notesBlocks.map(slim));
+  // Only an empty page can safely be initialized without a known ownership
+  // boundary. On an existing page, a missing/renamed Notes heading needs repair.
+  if (results.length === 0) {
+    const initialized = await client.blocks.children.append({
+      block_id: pageId,
+      children: [heading(2, NOTES_HEADING), {
+        object: "block", type: "paragraph",
+        paragraph: { rich_text: richText("(write your notes here — sync never touches this section)") },
+      }] as any,
+    });
+    if (initialized.results.length !== 2) throw new Error("Incomplete Notes initialization response");
+    results.push(...initialized.results as (Block & { id: string })[]);
+    // The API can return partial block objects; use the known heading payload.
+    results[0] = { ...heading(2, NOTES_HEADING), id: results[0]!.id };
   }
-  if (activityBlocks.length > 0) await append(activityBlocks.map(slim));
+
+  const notesIndex = results.findIndex(b => isHeading(b, NOTES_HEADING));
+  if (notesIndex < 0) throw new Error("Notes heading missing; refusing to replace an unbounded Details section");
+  const activityIndex = results.findIndex(b => isHeading(b, ACTIVITY_HEADING));
+  const boundary = activityIndex >= 0 ? Math.min(notesIndex, activityIndex) : notesIndex;
+  const detailsIndex = results.findIndex((b, i) => i < boundary && isHeading(b, DETAILS_HEADING));
+  const insertIndex = detailsIndex >= 0 ? detailsIndex : boundary;
+  const oldDetails = detailsIndex >= 0 ? results.slice(detailsIndex, boundary) : [];
+
+  let after = results[insertIndex - 1]?.id;
+  for (let i = 0; i < newDetails.length; i += 90) {
+    const children = newDetails.slice(i, i + 90);
+    const appended = await client.blocks.children.append({
+      block_id: pageId,
+      children: children as any,
+      position: after ? { type: "after_block", after_block: { id: after } } : { type: "start" },
+    });
+    let created: { id: string }[] = appended.results;
+    const knownIds = new Set(results.map(b => b.id));
+    // Append responses are paginated and need not include every created block.
+    // Never infer success from the count alone or anchor to an existing block.
+    if (appended.has_more || created.length !== children.length ||
+        created.some(b => !b.id || knownIds.has(b.id)) ||
+        new Set(created.map(b => b.id)).size !== children.length) {
+      const observed = await listChildren();
+      const start = after ? observed.findIndex(b => b.id === after) + 1 : 0;
+      const end = observed.findIndex(b => b.id === results[insertIndex]!.id);
+      const inserted = observed.slice(start, end);
+      if ((after && start === 0) || end < start || inserted.length !== children.length ||
+          inserted.some((b, index) => !b.id || knownIds.has(b.id) || !matchesRequest(children[index], b)) ||
+          new Set(inserted.map(b => b.id)).size !== children.length) {
+        throw new Error("Incomplete Details append readback; keeping previous details");
+      }
+      created = inserted;
+    }
+    after = created.at(-1)!.id;
+  }
+
+  // Keep the old heading until all of its contents have been removed. On retry,
+  // any partial or duplicate Details sections remain before the same boundary.
+  for (const block of oldDetails.reverse()) await client.blocks.delete({ block_id: block.id });
 }
 
 function blockText(block: { type?: string; [k: string]: unknown }): string {
   const t = block.type;
   if (!t) return "";
-  const data = block[t] as { rich_text?: { plain_text?: string }[] } | undefined;
-  return (data?.rich_text ?? []).map((r) => r.plain_text ?? "").join("");
+  const data = block[t] as { rich_text?: { plain_text?: string; text?: { content?: string } }[] } | undefined;
+  return (data?.rich_text ?? []).map((r) => r.plain_text ?? r.text?.content ?? "").join("");
+}
+
+/** Match supplied fields only: Notion adds IDs, timestamps and default styling. */
+function matchesRequest(expected: unknown, observed: unknown, fieldPath = ""): boolean {
+  if (typeof expected === "string" && typeof observed === "string" &&
+      /\.rich_text\[\]\.text\.link\.url$/.test(fieldPath)) {
+    return equivalentRichTextUrl(expected, observed);
+  }
+  if (Array.isArray(expected)) {
+    return Array.isArray(observed) && expected.length === observed.length &&
+      expected.every((value, index) => matchesRequest(value, observed[index], `${fieldPath}[]`));
+  }
+  if (expected !== null && typeof expected === "object") {
+    return observed !== null && typeof observed === "object" &&
+      Object.entries(expected).every(([key, value]) =>
+        matchesRequest(value, (observed as Record<string, unknown>)[key], `${fieldPath}.${key}`));
+  }
+  return expected === observed;
+}
+
+/** Notion may percent-encode query characters in persisted rich-text URLs.
+ * Compare only that demonstrated normalization; never normalize destinations,
+ * encoded paths, fragments, parameter order, duplicate keys or malformed UTF-8.
+ */
+function equivalentRichTextUrl(expected: string, observed: string): boolean {
+  if (expected === observed) return true;
+  const parts = (value: string) => {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const match = /^(https?:\/\/[^?#]+)\?([^#]*)(#.*)?$/.exec(value);
+    if (!match) return null;
+    const query = match[2]!.split("&").map(parameter => {
+      const equal = parameter.indexOf("=");
+      const decode = (part: string) => decodeURIComponent(part.replace(/\+/g, " "));
+      return [equal >= 0, decode(equal >= 0 ? parameter.slice(0, equal) : parameter),
+        equal >= 0 ? decode(parameter.slice(equal + 1)) : ""];
+    });
+    return [match[1], query, match[3] ?? ""];
+  };
+  try {
+    const left = parts(expected), right = parts(observed);
+    return left !== null && right !== null && JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }

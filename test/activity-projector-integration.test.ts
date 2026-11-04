@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type {Client} from '@notionhq/client';
+import type {AssignmentRow} from '../src/store/db.js';
+const text=(id:string,value:string,type='paragraph')=>({id,object:'block',type,[type]:{rich_text:[{type:'text',text:{content:value}}]}});
+const plain=(b:any)=>(b[b.type]?.rich_text??[]).map((r:any)=>r.text?.content??r.plain_text??'').join('');
+test('normal projector reuses revision Activity across replay and preserves Notes/history/overrides',async()=>{
+ const {config}=await import('../src/config.js');
+ config.statePath='/nonexistent-synthetic-projector-state';
+ config.assignmentsDbId='a'.repeat(32);config.coursesDbId='b'.repeat(32);
+ const {upsertAssignmentPage}=await import('../src/notion/projector.js');
+ const original=[text('preface','USER PREFACE'),text('old-details','📋 Assignment Details','heading_2'),text('old-facts','OLD FACTS'),text('notes','🗒️ Notes','heading_2'),text('note','USER NOTE'),text('activity','🕘 Activity','heading_2'),text('history','HISTORICAL ACTIVITY')];
+ let blocks:any[]=structuredClone(original),seq=0,mutations=0,pageExists=true;
+ const properties:any={'Do Not Sync':{type:'checkbox',checkbox:false},Hidden:{type:'checkbox',checkbox:true},'In Progress':{type:'checkbox',checkbox:true}};
+ const client={dataSources:{query:async()=>({results:pageExists?[{id:'page'}]:[]})},pages:{create:async()=>{pageExists=true;mutations++;return {id:'page'};},retrieve:async()=>({id:'page',archived:false,in_trash:false,properties:structuredClone(properties)}),update:async({properties:p}:any)=>{mutations++;Object.assign(properties,p);return {id:'page'};}},blocks:{children:{list:async()=>({results:structuredClone(blocks),has_more:false,next_cursor:null}),append:async({children,position}:any)=>{mutations++;const created=children.map((b:any)=>({...structuredClone(b),id:`new-${++seq}`}));const at=position?.type==='start'?0:position?.type==='after_block'?blocks.findIndex(b=>b.id===position.after_block.id)+1:blocks.length;blocks.splice(at,0,...created);return {results:created,has_more:false,next_cursor:null};}},delete:async({block_id}:any)=>{mutations++;blocks=blocks.filter(b=>b.id!==block_id);return {id:block_id};}}} as unknown as Client;
+ const row={canvas_id:42,course_id:1,name:'Synthetic assignment',points_possible:10,sub_score:8,sub_grade:'8',sub_attempts:1,sub_workflow_state:'graded',submission_types:'[]'} as AssignmentRow;
+ const opts={isNew:false,revision:'11111111-2222-4333-8444-555555555555',changedFields:['sub_score'],coursePageId:null,courseLabel:'FAKE'};
+ assert.equal((await upsertAssignmentPage(client,row,'fake.instructure.com',opts)).pushed,true);
+ assert.equal((await upsertAssignmentPage(client,row,'fake.instructure.com',opts)).pushed,true);
+ const entries=blocks.filter(b=>plain(b).includes(`[assignment=42;revision=${opts.revision}]`));assert.equal(entries.length,1);
+ for(const id of ['preface','notes','note','activity','history'])assert.deepEqual(blocks.find(b=>b.id===id),original.find(b=>b.id===id));
+ assert.equal(properties.Hidden.checkbox,true);assert.equal(properties['In Progress'].checkbox,true);assert.equal(properties['Do Not Sync'].checkbox,false);
+ properties['Do Not Sync'].checkbox=true;const before=mutations;
+ assert.equal((await upsertAssignmentPage(client,row,'fake.instructure.com',opts)).pushed,false);assert.equal(mutations,before);
+ // Exercise the unchanged empty-page initializer, then the first update.
+ properties['Do Not Sync'].checkbox=false;blocks=[];pageExists=false;
+ await upsertAssignmentPage(client,row,'fake.instructure.com',{...opts,isNew:true,changedFields:['__new__']});
+ assert.equal(blocks.filter(b=>plain(b)==='🕘 Activity').length,0);
+ const noteBaseline=blocks.filter(b=>plain(b)==='🗒️ Notes'||plain(b).includes('write your notes'));
+ await upsertAssignmentPage(client,row,'fake.instructure.com',{...opts,revision:'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'});
+ assert.equal(blocks.filter(b=>plain(b)==='🕘 Activity').length,1);
+ for(const b of noteBaseline)assert.deepEqual(blocks.find(x=>x.id===b.id),b);
+});

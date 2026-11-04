@@ -1,3 +1,5 @@
+import { recordDiagnostic } from "../runtime/diagnostics.js";
+import { createNotionTransport, type NotionRequestEvent } from "./transport.js";
 import { Client } from "@notionhq/client";
 import { config, requireEnv } from "../config.js";
 import fs from "node:fs";
@@ -15,8 +17,16 @@ export const ASSIGNMENT_STATUS_OPTIONS = [
   { name: "Missing", color: "red" },
 ] as const;
 
-export function notion(): Client {
-  return new Client({ auth: requireEnv("NOTION_TOKEN", config.notionToken) });
+export function notion(options: { onRequestEvent?: (event: NotionRequestEvent) => void } = {}): Client {
+  return new Client({
+    auth: requireEnv("NOTION_TOKEN", config.notionToken),
+    retry: false,
+    // Keep the SDK default timeout; read cancellation is owned by the transport.
+    fetch: createNotionTransport({ onEvent: event => {
+      recordDiagnostic(event);
+      options.onRequestEvent?.(event);
+    } }),
+  });
 }
 
 export interface DbIds {

@@ -1,3 +1,4 @@
+import { recordDiagnostic } from "./runtime/diagnostics.js";
 import { config } from "./config.js";
 import { resolveAuth, saveOAuthCredentials } from "./canvas/auth.js";
 import { CanvasClient } from "./canvas/client.js";
@@ -59,7 +60,15 @@ async function main() {
 
     case "sync": {
       const full = args.includes("--full");
-      const result = await runSync({ full });
+      recordDiagnostic({ type: "sync_started", full });
+      let result;
+      try { result = await runSync({ full }); }
+      catch (error) { recordDiagnostic({ type: "sync_failed" }); throw error; }
+      const pending = (db.prepare("SELECT count(*) n FROM pending_assignment_projections").get() as { n: number }).n;
+      recordDiagnostic({ type: "sync_finished", status: result.errors.length ? "error" : "ok", runId: result.runId,
+        coursesSeen: result.coursesSeen, assignmentsSeen: result.assignmentsSeen, changesPushed: result.changesPushed,
+        pending, errorCount: result.errors.length });
+      if (result.errors.length) process.exitCode = 1;
       console.log(`✅ Sync #${result.runId}: ${result.coursesSeen} courses, ${result.assignmentsSeen} assignments, ${result.changesPushed} changes pushed.`);
       for (const e of result.errors) console.error(`   ⚠️  ${e}`);
       break;

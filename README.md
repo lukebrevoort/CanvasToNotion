@@ -41,6 +41,32 @@ Canvas ──→ SQLite (canonical mirror + snapshots) ──→ Notion (project
 
 `Do Not Sync` ✅ freezes a page completely (use instead of the old "Dont show" status).
 
+## Retry behavior
+
+Assignment observations, snapshots, and pending Notion projections commit in one
+SQLite transaction. A failed projection stays pending until its properties, details,
+and activity writes all finish successfully. Incremental runs retry pending work
+for currently observed courses even when Canvas returns no updated assignments.
+`Do Not Sync` pages remain pending without writes and catch up after the flag is
+cleared. Full syncs also queue unchanged assignments to refresh their details.
+
+The store adds `pending_assignment_projections` on initialization. It cannot infer
+which projections failed before this tracking existed; an explicitly requested
+full sync is needed to reconcile those older gaps. Keep the SQLite database on
+persistent storage and run only one sync writer.
+
+Delivery is at least once: if Notion accepts a write but its response is lost,
+updated projections use an assignment+pending-revision Activity receipt so a
+sequential retry reuses the same entry. Legacy timestamp-only history is preserved
+rather than guessed to be the same receipt. This is not an atomic concurrency
+fence: keep a single writer. Details refreshes insert the complete new
+section before removing old Details blocks, so an interruption can temporarily
+leave duplicate details until the next successful retry. Notes and Activity
+blocks retain their original IDs and nested content: sync never deletes or
+rebuilds them. Existing pages missing the `🗒️ Notes` heading fail closed; restore
+that heading at the ownership boundary before retrying. Only empty pages receive
+a new Notes section automatically.
+
 ## Setup
 
 ```bash
@@ -72,3 +98,28 @@ Add to an MCP client config:
 
 Tools: `sync_status`, `get_assignment(id)`, `verify_assignment(id)` (live
 Canvas-vs-store drift check), `force_sync(full?)`, `list_courses`.
+
+## Optional interruption diagnostics
+
+Set `CANTN_DIAGNOSTICS_DIR` to a local directory (for example `data/diagnostics`)
+before running the CLI sync. Each process writes a separate private, fsynced
+`sync-<random-id>/events.ndjson` file with process identity, five-second
+heartbeats, sanitized Notion request starts/settlements, and sync result/pending
+counts. URLs, tokens, request/response bodies, assignment content and raw errors
+are not included. Logging is disabled when the variable is unset.
+
+A missing `sync_finished` event means no completed result was recorded; neither
+a stopped heartbeat nor a local process-exit event proves that a remote write
+was rolled back. Retain uncertain attempts and reconcile before retrying. This
+is diagnostic evidence, not a durable scheduler, distributed lock or remote
+write fence. CLI sync exits nonzero when the completed run reports errors.
+
+Notion read requests have a 25-second transport deadline covering headers and
+body consumption, and query POSTs are classified as reads. SDK automatic retries
+are disabled. Mutating requests receive no new transport-abort deadline: an
+ambiguous write still requires reconciliation, not a blind automatic retry.
+
+Each Notion client refuses new requests while its previous transport is still
+unsettled, including after an SDK timeout. This prevents overlap within that
+client; it does not fence another process, a new client, or a restarted run.
+Do not interpret SDK timeout as proof that a remote mutation was cancelled.
