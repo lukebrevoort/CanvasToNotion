@@ -38,6 +38,25 @@ binding, production database import or live Canvas/Notion transport here.
   state, resume between completed batches, preserve omitted refresh tokens, and
   refuse lost-receipt batch/auth retries across restarts. No provider calls occur.
 
+- `coordinator.ts` adds a durable aggregate admission gate for trusted callbacks.
+  It persists non-ready state before import or a batch, verifies exact durable
+  component references before/after work, and records completed operation IDs.
+  Interrupted work stays blocked. A lost final ready acknowledgment may be
+  revalidated after reconstruction only when the referenced effects are already
+  terminal; it does not authorize replay of the same operation.
+- `transport.ts` bounds actual injected fetch calls, refuses redirects, omits
+  credentials and allows only `.invalid` fixture origins. Its deadline covers
+  headers and streamed JSON; ignored cancellation remains tracked until settled
+  and leaves sticky uncertainty. There is no real-provider/auth mode.
+- `mirror-state.ts` supplies pure observation/revision/acknowledgment transitions.
+  Identical source observations keep stable pending identity; stale acknowledgments
+  cannot clear newer work. Do Not Sync freezes observations/acks without deleting
+  pending work. These helpers do not themselves persist or verify remote effects.
+- The local composed fixture gates mirror import and checkpointed journal batches
+  through the coordinator and bounded transport. It verifies durable artifact
+  digests and terminal journal receipts, resumes completed batches across restart,
+  and refuses uncertain import/effect retries without duplicating dummy effects.
+
 ## Tests
 
 Run `npm run typecheck` and `node --import tsx --test test/*.test.ts`.
@@ -63,15 +82,21 @@ credentials outside this journal.
 
 ### Cross-component boundary
 
-These are separate prototype components, not an integrated sync admission path.
-Their storage ports have separate queues and local failure latches. A production
-coordinator must serialize import, journal and auth admission, and persist an
-aggregate readiness/uncertainty gate before any provider work. Observing a mirror
-row after a lost import receipt does not establish migration readiness. Auth
-persistence precedes journal acknowledgment; a crash between those commits leaves
-that journal blocked even if the auth row says ready. Do not use auth state with a
-replacement journal or treat its ready status as permission to use credentials.
-Fixture keys and token strings are public dummy values, never provisioning advice.
+The coordinator closes aggregate admission for the composed import/batch fixture,
+not for arbitrary direct use of low-level ports. All component writes must occur
+inside its awaited callbacks, and its verifier must read exact durable evidence.
+Separate component queues are not independently a global lock. Production needs
+one authenticated orchestration entry point with no raw-port bypass and integrated
+mirror/auth/transport state. The auth prototype still has its own isolated fixture;
+production key access and header generation are deliberately absent.
+
+Auth persistence precedes journal acknowledgment; a crash between those commits
+leaves that journal blocked even if the auth row says ready. Do not use auth state
+with a replacement journal or treat its ready status as permission to use tokens.
+A coordinator ready row after lost delivery is usable only after revalidating all
+referenced terminal component receipts; a non-ready row never expires or clears
+itself. Fixture keys and token strings are public dummy values, never provisioning
+advice. Transport aborts are not proof of cancellation at a remote service.
 
 ## Next implementation gates
 
