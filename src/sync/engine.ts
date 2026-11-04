@@ -86,6 +86,7 @@ export async function runSync(opts: { full?: boolean } = {}): Promise<SyncResult
             if (!row) continue;
             const push = await upsertAssignmentPage(notionClient, row, config.canvasDomain, {
               isNew: Boolean(pending.is_new),
+              revision: pending.revision,
               changedFields: JSON.parse(pending.changed_fields) as string[],
               coursePageId: coursePageIds.get(courseId) ?? null,
               courseLabel: courseRow.course_code?.trim() || courseRow.name,

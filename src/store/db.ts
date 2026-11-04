@@ -292,6 +292,8 @@ export interface PendingProjection {
 function queueProjection(id: number, isNew: boolean, changedFields: string[], forceDetails: boolean): void {
   const previous = db.prepare("SELECT * FROM pending_assignment_projections WHERE assignment_id = ?")
     .get(id) as PendingProjection | undefined;
+  // A full refresh of unchanged data retries the same receipt, even if a prior
+  // Activity append committed but its response was lost. New observations rotate it.
   const fields = [...new Set<string>([
     ...(previous ? JSON.parse(previous.changed_fields) as string[] : []),
     ...changedFields,
@@ -302,7 +304,8 @@ function queueProjection(id: number, isNew: boolean, changedFields: string[], fo
     ON CONFLICT(assignment_id) DO UPDATE SET
       revision = excluded.revision, is_new = excluded.is_new,
       changed_fields = excluded.changed_fields, force_details = excluded.force_details
-  `).run(id, randomUUID(), Number(isNew || Boolean(previous?.is_new)), JSON.stringify(fields),
+  `).run(id, previous && changedFields.length === 0 ? previous.revision : randomUUID(),
+    Number(isNew || Boolean(previous?.is_new)), JSON.stringify(fields),
     Number(forceDetails || Boolean(previous?.force_details)));
 }
 

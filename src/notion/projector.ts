@@ -1,6 +1,7 @@
 import type { Client } from "@notionhq/client";
 import { savedDbIds } from "./schema.js";
-import { detailsBlocks, replaceDetailsSection, activityBlock } from "./blocks.js";
+import { detailsBlocks, replaceDetailsSection } from "./blocks.js";
+import { projectionActivity, ensureRevisionActivity } from "./activity.js";
 import type { AssignmentRow } from "../store/db.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -75,12 +76,27 @@ export function assignmentProperties(
 }
 
 async function findPage(client: Client, dsId: string, prop: string, value: number): Promise<string | null> {
-  const res = await client.dataSources.query({
-    data_source_id: dsId,
-    filter: { property: prop, number: { equals: value } },
-    page_size: 1,
-  });
-  return res.results[0]?.id ?? null;
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const res = await client.dataSources.query({
+      data_source_id: dsId,
+      filter: { property: prop, number: { equals: value } },
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    });
+    for (const page of res.results) {
+      if (!page.id || ids.has(page.id)) throw new Error("Repeated or missing identity result");
+      ids.add(page.id);
+      if (ids.size > 1) throw new Error("Ambiguous source identity; no mutation");
+    }
+    if (!res.has_more) break;
+    if (!res.next_cursor || cursors.has(res.next_cursor)) throw new Error("Invalid identity pagination");
+    cursor = res.next_cursor;
+    cursors.add(cursor);
+  } while (true);
+  return [...ids][0] ?? null;
 }
 
 export async function upsertCoursePage(
@@ -115,36 +131,34 @@ export async function upsertAssignmentPage(
   domain: string,
   opts: {
     isNew: boolean;
+    revision: string;
     changedFields: string[];
     coursePageId: string | null;
     courseLabel: string;
     forceDetails?: boolean;
   },
 ): Promise<{ pageId: string; pushed: boolean }> {
+  // Validate the stable key before any remote mutation.
+  const activity = projectionActivity({
+    assignmentId: row.canvas_id, revision: opts.revision,
+    changedFields: opts.changedFields, isNew: opts.isNew,
+  });
   const { assignmentsDbId, assignmentsDsId } = savedDbIds();
   const existingPageId = await findPage(client, assignmentsDsId, "AssignmentID", row.canvas_id);
 
   // User-override flags live in Notion; fetch them when the page exists.
-  let hidden = false;
   let doNotSync = false;
-  let inProgress = false;
   if (existingPageId) {
     const page = (await client.pages.retrieve({ page_id: existingPageId })) as {
       properties: Record<string, { checkbox?: boolean }>;
     };
-    hidden = Boolean(page.properties["Hidden"]?.checkbox);
     doNotSync = Boolean(page.properties["Do Not Sync"]?.checkbox);
-    inProgress = Boolean(page.properties["In Progress"]?.checkbox);
   }
 
   if (doNotSync) return { pageId: existingPageId ?? "", pushed: false };
 
   const props: Record<string, any> = assignmentProperties(row, domain, opts.courseLabel);
-  if (existingPageId) {
-    // Humans own these — preserve what's on the page, never overwrite.
-    props["Hidden"] = { checkbox: hidden };
-    props["In Progress"] = { checkbox: inProgress };
-  }
+  // Omit human-owned properties entirely; sampled values can race user edits.
   if (opts.coursePageId) props["Course"] = { relation: [{ id: opts.coursePageId }] };
 
   let pageId: string;
@@ -167,11 +181,11 @@ export async function upsertAssignmentPage(
     }));
   }
 
-  // Activity log for notable property changes.
-  const notable = opts.changedFields.filter((f) => f !== "description_html" && f !== "__new__");
-  if (notable.length > 0 && !opts.isNew) {
-    const entry = `${new Date().toISOString().slice(0, 16).replace("T", " ")} — changed: ${notable.join(", ")}`;
-    await client.blocks.children.append({ block_id: pageId, children: [activityBlock(entry)] as any });
+  // A stable assignment+revision receipt lets a later run reconcile an append
+  // that committed even if its response was lost.
+  if (activity) {
+    const observed = await ensureRevisionActivity(client, pageId, activity);
+    if (observed === "frozen") return { pageId, pushed: false };
   }
 
   return { pageId, pushed: true };

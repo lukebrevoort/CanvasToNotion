@@ -30,6 +30,10 @@ let frozen = false;
 let fail: "properties" | "details" | "activity" | undefined;
 let assignmentWrites: { kind: string; body: any }[] = [];
 let blockSequence = 0;
+let blocks: any[] = [];
+let loseActivityResponse = false;
+const blockText = (block: any): string => (block[block.type]?.rich_text ?? [])
+  .map((part: any) => part.plain_text ?? part.text?.content ?? "").join("");
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "Content-Type": "application/json" },
@@ -42,6 +46,9 @@ beforeEach(() => {
   frozen = false;
   fail = undefined;
   assignmentWrites = [];
+  blocks = [];
+  blockSequence = 0;
+  loseActivityResponse = false;
   // Every HTTP request stays in this fixture, including unexpected requests.
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
@@ -57,18 +64,32 @@ beforeEach(() => {
       if (url.pathname === "/v1/pages/course-page") return json({ id: "course-page" });
       if (url.pathname === "/v1/pages/assignment-page") {
         if (init?.method === "GET") return json({ properties: {
-          "Do Not Sync": { checkbox: frozen }, Hidden: { checkbox: true }, "In Progress": { checkbox: true },
+          "Do Not Sync": { type: "checkbox", checkbox: frozen }, Hidden: { checkbox: true }, "In Progress": { checkbox: true },
         } });
         const body = JSON.parse(String(init?.body));
         assignmentWrites.push({ kind: "properties", body });
         return fail === "properties" ? failure() : json({ id: "assignment-page" });
       }
       if (url.pathname === "/v1/blocks/assignment-page/children") {
-        if (init?.method === "GET") return json({ results: [] });
+        if (init?.method === "GET") return json({ results: structuredClone(blocks), has_more: false, next_cursor: null });
         const body = JSON.parse(String(init?.body));
-        const kind = body.children[0]?.type === "paragraph" ? "activity" : "details";
+        const kind = body.children.some((b: any) => blockText(b).includes("[assignment=")) ? "activity" : "details";
         assignmentWrites.push({ kind, body });
-        return fail === kind ? failure() : json({ results: body.children.map((b: object, i: number) => ({ ...b, id: `block-${++blockSequence}` })) });
+        if (fail === kind) return failure();
+        const created = body.children.map((b: object) => ({ ...b, id: `block-${++blockSequence}` }));
+        const index = body.position?.type === "start" ? 0
+          : body.position?.type === "after_block" ? blocks.findIndex(b => b.id === body.position.after_block.id) + 1
+          : blocks.length;
+        blocks.splice(index, 0, ...created);
+        if (loseActivityResponse && kind === "activity") throw new Error("simulated committed Activity response loss");
+        return json({ results: created, has_more: false, next_cursor: null });
+      }
+      if (url.pathname.startsWith("/v1/blocks/") && init?.method === "DELETE") {
+        const id = url.pathname.split("/").at(-1);
+        const target = blocks.find(b => b.id === id);
+        assert.ok(target && !blockText(target).includes("Notes") && !blockText(target).includes("Activity"));
+        blocks = blocks.filter(b => b.id !== id);
+        return json({ id });
       }
     }
     throw new Error(`Unexpected mocked request: ${init?.method} ${url.pathname}`);
@@ -131,8 +152,8 @@ test("Do Not Sync retains pending work without writes and catches up after unfre
   frozen = false;
   assert.equal((await runSync()).changesPushed, 1);
   const properties = assignmentWrites.find(w => w.kind === "properties")!.body.properties;
-  assert.deepEqual(properties.Hidden, { checkbox: true });
-  assert.deepEqual(properties["In Progress"], { checkbox: true });
+  assert.equal(properties.Hidden, undefined);
+  assert.equal(properties["In Progress"], undefined);
   assert.equal(properties["Do Not Sync"], undefined);
   assert.deepEqual(pendingProjectionsForCourse(1), []);
 });
@@ -183,4 +204,25 @@ test("an enqueue failure rolls back both the observation and its snapshot", asyn
   } finally {
     db.exec("DROP TRIGGER reject_pending");
   }
+});
+
+test("lost Activity responses keep the same pending receipt on full retry without another append", async () => {
+  assert.equal((await runSync()).changesPushed, 1);
+  observed = [assignment("Renamed")];
+  loseActivityResponse = true;
+  const failed = await runSync();
+  assert.equal(failed.errors.length, 1);
+  const pending = pendingProjectionsForCourse(1)[0]!;
+  const marker = `[assignment=101;revision=${pending.revision}]`;
+  assert.equal(blocks.filter(b => blockText(b).includes(marker)).length, 1);
+  assert.equal(assignmentWrites.filter(w => w.kind === "activity").length, 1);
+
+  loseActivityResponse = false;
+  assignmentWrites = [];
+  const retried = await runSync({ full: true });
+  assert.deepEqual(retried.errors, []);
+  assert.equal(retried.changesPushed, 1);
+  assert.deepEqual(pendingProjectionsForCourse(1), []);
+  assert.equal(blocks.filter(b => blockText(b).includes(marker)).length, 1);
+  assert.equal(assignmentWrites.filter(w => w.kind === "activity").length, 0);
 });
