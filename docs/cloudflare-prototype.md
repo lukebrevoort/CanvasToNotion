@@ -245,3 +245,28 @@ active/uncertain or that deadline has expired. This is not cancellation proof.
 See [canonical integration contract](cloudflare-canonical-integration.md) and
 [cutover checklist](cloudflare-cutover-checklist.md) for the remaining trusted
 execution, acknowledgment, recurring-cycle and production boundaries.
+
+## Canonical assignment projection bridge
+
+`canonical-project.ts` joins current canonical pending plans to the portable
+projector through the compact auth/journal execution boundary. It verifies the
+source-complete cycle and trusted course/destination context, then persists each
+verified projected/deferred outcome and exact pending acknowledgment together.
+Frozen rows remain pending but advance durable attempted progress for that cycle.
+A lost receipt after a committed acknowledgment retains evidence and blocks a
+fresh process from replaying it. No global successful run is recorded here.
+
+The batch shares one actual HTTP budget (at most50 remaining requests supplied
+by its owner), and one aggregate wall-clock deadline, across per-assignment
+transports. Earlier source/refresh requests must be deducted by the owner. Limits
+and capacity headroom are checked before dispatch; this does not predict how
+many dynamic Notion operations an assignment will require. Prefer one assignment
+per batch until measured request bounds support larger batches.
+
+Tests use a persistent dummy HTTP service and trusted offline readback oracle.
+They exercise the actual projector, protected content, early/late freeze,
+unchanged receipt identity, response loss, unsettled transport, exact pending
+races, checkpoint rollback and durability uncertainty. The oracle is not a real
+Notion verification implementation. Course-page creation, full-cycle terminal
+publication, safe next-cycle transitions, alarms and production authentication
+remain separate integration gates.
