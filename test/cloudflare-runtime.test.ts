@@ -102,6 +102,12 @@ test("real local workerd SQLite journal persists success and uncertainty across 
     assert.equal((await call("corrupt",{action:"coordinator_batch",reference:faultBatch.readiness.reference,checkpoint:faultBatch.batch.checkpoint})).status,409);
     assert.equal((await call("corrupt",{action:"inspect"})).body.effects,1);
     assert.equal((await call("corrupt",{action:"coordinator_inspect"})).body.phase,"uncertain");
+    const sourceFirst=(await call("canvas",{action:"canvas_page"})).body;
+    assert.equal(sourceFirst.done,false);assert.equal(sourceFirst.items.length,1);assert.equal(sourceFirst.requests,1);
+    await mf.dispose();mf=start();
+    const sourceSecond=(await call("canvas",{action:"canvas_page"})).body;
+    assert.equal(sourceSecond.done,true);assert.equal(sourceSecond.items.length,2);assert.equal(sourceSecond.requests,1);assert.equal(sourceSecond.items[1].submission.score,8);assert.equal(sourceSecond.normalized[1].sub_score,8);
+    assert.equal((await call("canvas",{action:"canvas_page"})).body.requests,0);
     assert.equal(outboundCalls, 0);
   } finally { await mf.dispose(); await fs.rm(directory, { recursive: true, force: true }); }
 });

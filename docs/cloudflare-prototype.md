@@ -165,3 +165,56 @@ verified terminal retention need a separately tested contract before indefinite
 scheduled operation can be claimed.
 
 - [Durable Object free-tier quotas](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+
+## Fresh compact V2 experiment
+
+`compact-journal.ts` is a different, opt-in contract for a fresh synthetic store.
+It never migrates, resets or prunes V1. Trigger IDs are derived from a monotonic
+generation. Only the current generation can admit an immutable plan of at most
+20 effects. The complete active/uncertain plan and receipts remain available;
+only terminal generations fold into a rolling hash and latest terminal record.
+The hash is not recoverable history, an audit log, or independent provider proof.
+
+The matching compact coordinator retains current admission and latest readiness
+rather than an ever-growing completed-ID list. Exact durable component evidence
+is still required. Callbacks must persist the matching mirror revision/source
+cursor acknowledgment before compact `finish`, then publish verified readiness.
+The coordinator's post-callback verifier cannot retroactively establish that
+ordering. Never relabel an old trigger or provider request with a new generation:
+plans must be derived from current durable pending revisions and source cursors.
+The compact auth bridge pins the exact handle, plan digest, intent/index mapping
+and local ownership; it does not convert old V1 state or authorize takeover.
+
+## Portable source and projection steps
+
+`canvas-pages.ts` performs one bounded list-page request per call, with a
+serializable candidate checkpoint and normalized course/assignment/group data.
+It preserves embedded submissions and validates same-origin endpoint/filter
+identity, cursor cycles and item/page bounds. The workerd fixture persists page
+items and cursor together across restarts. That fixture is not the production
+source-watermark transaction. Real Canvas cursor variations and omitted embedded
+submissions need provider fixtures and explicit fallback handling before cutover.
+
+`assignment-input.ts` extracts the existing source-to-row conversion unchanged;
+the Node engine delegates to it. `notion-client.ts` exposes only the SDK call
+shapes used by the projector, through injected bounded dummy HTTP. It pins the
+installed SDK's `2025-09-03` Notion API version, passes opaque cursors verbatim,
+and preserves existing keyed Activity replay and human-owned fields. The
+transport cannot accept production hosts or authorization headers.
+
+- [Notion API versioning and opaque cursors](https://developers.notion.com/reference/versioning)
+
+The fresh-V2 workerd fixture completes one explicit refresh/projection scenario
+and 75 no-change cycles with restart/failure probes. Its plan is intentionally
+fixed for that scenario; it is not a general planner derived from arbitrary
+pending revisions. The tests measure serialized ledger/coordinator state, not
+physical SQLite storage or provider billing. Unknown provider outcomes and
+failed mirror acknowledgments remain blocked with evidence retained.
+
+`canvas-storage.ts` persists reading admission before a page request and commits
+normalized items and the next cursor atomically. Stale snapshots, unresolved
+reading and unknown durability block another request. Endpoint completion does
+not advance a global Canvas sync watermark. Production still needs the canonical
+store schema, complete course/source traversal and projection-aware watermark
+logic; the simplified synthetic mirror must not replace existing production
+history or subtly change Do Not Sync semantics.

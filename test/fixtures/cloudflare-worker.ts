@@ -10,6 +10,9 @@ import { SyntheticMirrorImporter } from "../../src/cloudflare/mirror-import.js";
 import { runDummyBatch, type BatchCheckpoint } from "../../src/cloudflare/batches.js";
 import { SyntheticJsonTransport, SyntheticTransportError } from "../../src/cloudflare/transport.js";
 import { SyntheticCoordinator, type ReadinessReference, type CoordinatorReceipt } from "../../src/cloudflare/coordinator.js";
+import { createCanvasPageState, readCanvasPage, type CanvasPageState } from "../../src/cloudflare/canvas-pages.js";
+import { toAssignmentInput } from "../../src/sync/assignment-input.js";
+import { DurableSyntheticCanvasStore } from "../../src/cloudflare/canvas-storage.js";
 const authScope = { syntheticOnly: true as const, accountId: "dummy-account", sourceId: "canvas.invalid", destinationId: "dummy-notion-ds" };
 const binding = { accountId: "SYNTHETIC_account", sourceId: "SYNTHETIC_canvas", destinationId: "SYNTHETIC_notion" };
 const mirrorFixture = {
@@ -57,6 +60,19 @@ export class SyntheticJournalObject {
   async fetch(request: Request): Promise<Response> {
     const input = await request.json() as { action: string; runId?: string; generation?: number; loseReceipt?: boolean; checkpoint?: BatchCheckpoint; reference?: ReadinessReference };
     try {
+      if (input.action === "canvas_page") {
+        const source=new DurableSyntheticCanvasStore(this.state.storage);
+        let previous=await source.inspect();
+        if(!previous) previous=await source.initialize(createCanvasPageState({syntheticOnly:true,endpoint:{kind:"assignments",courseId:990000001},maxPages:5,maxItems:10}));
+        const transport=new SyntheticJsonTransport({syntheticOnly:true,origin:"https://canvas.invalid",requestBudget:1,fetch:async(url)=>{
+          const current=new URL(String(url)); const second=current.searchParams.get("page")==="2";
+          const next=new URL(current);next.searchParams.set("page","2");
+          return Response.json([{id:second?990000021:990000020,course_id:990000001,name:second?"Dummy second":"Dummy first",submission:{assignment_id:second?990000021:990000020,workflow_state:"graded",score:8}}],{headers:second?{}:{Link:`<${next}>; rel="next"`}});
+        }});
+        const document=previous.page.nextUrl===null?previous:await source.ingestPage(previous,transport);
+        const normalized=document.items.map((a)=>toAssignmentInput(a as Parameters<typeof toAssignmentInput>[0],(a as {submission?:Parameters<typeof toAssignmentInput>[1]}).submission??null,new Map(),"UTC"));
+        return Response.json({state:document.page,items:document.items,normalized,done:document.page.nextUrl===null,requests:transport.state().used});
+      }
       if (input.action === "coordinator_corrupt_receipt") {
         // Fault injection confined to local synthetic SQLite, never provider data.
         this.state.storage.transactionSync(()=>{

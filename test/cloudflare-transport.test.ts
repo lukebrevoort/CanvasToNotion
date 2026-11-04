@@ -109,3 +109,24 @@ test("POST is conservatively a write, parsed JSON returned without response wrap
   assert.deepEqual(await t.request({ url, method: "POST", json: { dummy: true } }), [1, null]);
   assert.equal(t.state().lastOperationKind, "write");
 });
+
+test("requestDetailed exposes only bounded Link metadata plus parsed JSON", async () => {
+  const t = fake(async () => new Response('{}', { headers: { Link: '<https://notion.invalid/dummy?page=2>; rel="next"', 'X-Dummy-Secret': 'dummy-private-header' } }));
+  assert.deepEqual(await t.requestDetailed({ url }), { json: {}, link: '<https://notion.invalid/dummy?page=2>; rel="next"' });
+  assert.equal(t.state().used, 1);
+});
+
+test("oversized Link header refuses and cancels body without exposing it", async () => {
+  let canceled = false;
+  const t = fake(async () => new Response(new ReadableStream<Uint8Array>({ cancel() { canceled = true; } }), { headers: { Link: 'x'.repeat(8193) } }));
+  await assert.rejects(t.requestDetailed({ url }), code('response')); await t.settleStartedRequests(); assert(canceled);
+});
+
+ test("Notion version header is fixed and limited to the dummy Notion origin", async()=>{
+  let headers: Headers | undefined;
+  const t=new SyntheticJsonTransport({syntheticOnly:true,origin:"https://notion.invalid",requestBudget:1,fetch:async(_url,init)=>{headers=new Headers(init?.headers);return Response.json({dummy:true});}});
+  await t.request({url:"https://notion.invalid/v1/dummy",notionVersion:"2025-09-03"});
+  assert.equal(headers?.get("Notion-Version"),"2025-09-03");assert.equal(headers?.get("Authorization"),null);
+  let calls=0;const c=new SyntheticJsonTransport({syntheticOnly:true,origin:"https://canvas.invalid",requestBudget:1,fetch:async()=>{calls++;return Response.json({});}});
+  await assert.rejects(c.request({url:"https://canvas.invalid/dummy",notionVersion:"2025-09-03"}));assert.equal(calls,0);
+ });

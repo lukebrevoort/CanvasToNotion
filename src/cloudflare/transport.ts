@@ -15,6 +15,7 @@ export interface SyntheticJsonRequest {
   url: string;
   method?: "GET" | "HEAD" | "POST" | "PATCH" | "PUT" | "DELETE";
   json?: unknown;
+  notionVersion?: "2025-09-03";
   signal?: AbortSignal;
 }
 export interface SyntheticTransportOptions {
@@ -52,6 +53,10 @@ export class SyntheticJsonTransport {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
   }
   async request(request: SyntheticJsonRequest): Promise<unknown> {
+    return (await this.requestDetailed(request)).json;
+  }
+  /** Only pagination Link is exposed; never arbitrary response headers. */
+  async requestDetailed(request: SyntheticJsonRequest): Promise<{ json: unknown; link: string | null }> {
     if (this.uncertain) throw failure("uncertain");
     if (this.active) throw failure("busy");
     let url: URL;
@@ -59,7 +64,8 @@ export class SyntheticJsonTransport {
     const method = request.method ?? "GET";
     if (url.origin !== this.origin || url.username || url.password || url.hash ||
         !["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"].includes(method) ||
-        (["GET", "HEAD"].includes(method) && request.json !== undefined)) throw failure("invalid");
+        (["GET", "HEAD"].includes(method) && request.json !== undefined) ||
+        (request.notionVersion !== undefined && (this.origin !== "https://notion.invalid" || request.notionVersion !== "2025-09-03"))) throw failure("invalid");
     // Conservative: even a POST query is a write unless a separate reviewed
     // endpoint classifier proves otherwise. This never authorizes retries.
     const kind: OperationKind = method === "GET" || method === "HEAD" ? "read" : "write";
@@ -73,6 +79,7 @@ export class SyntheticJsonTransport {
       }
     } catch { throw failure("invalid", kind); }
     const signal = request.signal;
+    const notionVersion = request.notionVersion;
     const controller = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let cancellation: Promise<void> | undefined;
@@ -107,13 +114,15 @@ export class SyntheticJsonTransport {
         checkDeadline();
         this.used++; dispatched = true;
         const response = await this.fetchPort(url.href, {
-          method, body, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+          method, body, headers: body === undefined && notionVersion === undefined ? undefined : { ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...(notionVersion === undefined ? {} : { "Notion-Version": notionVersion }) },
           redirect: "manual", credentials: "omit", signal: controller.signal,
         });
         if (response.body) reader = response.body.getReader();
         checkDeadline();
         if (response.redirected || response.status >= 300 && response.status < 400) throw failure("redirect", kind, response.status);
         if (!response.ok) throw failure("response", kind, response.status);
+        const link = response.headers.get("Link");
+        if (link !== null && (new TextEncoder().encode(link).byteLength > 8192 || /[\r\n]/.test(link))) throw failure("response", kind);
         const chunks: Uint8Array[] = []; let size = 0;
         if (reader) {
           while (true) {
@@ -131,7 +140,7 @@ export class SyntheticJsonTransport {
         let parsed: unknown;
         try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
         catch { throw failure("response", kind); }
-        checkDeadline(); return parsed;
+        checkDeadline(); return { json: parsed, link };
       } catch (error) {
         if (dispatched) this.uncertain = true;
         // Never propagate payloads, URLs, provider errors or cancellation reasons.

@@ -7,6 +7,9 @@
  */
 import type { EffectReceipt, JournalBinding, OperationIntent, RunHandle, SingleWriterJournal } from "./journal.js";
 
+/** Structural port shared by explicitly admitted V1 and fresh-only V2 bridges. */
+export type AuthJournalPort = Pick<SingleWriterJournal, "execute" | "assertOwnedAdmission">;
+
 export interface SyntheticAuthScope extends JournalBinding { syntheticOnly: true }
 export interface SyntheticTokens { accessToken: string; refreshToken: string; /** Absolute Unix epoch milliseconds. */ expiresAt: number }
 export interface SyntheticRefreshResponse { accessToken: string; refreshToken?: string; /** Absolute Unix epoch milliseconds. */ expiresAt: number }
@@ -103,7 +106,7 @@ export class SyntheticAuthStateAdapter {
    * Journal instance/storage must be the same authoritative binding as refresh.
    */
   async withAccessToken(options: {
-    expectedGeneration: number; journal: SingleWriterJournal; handle: RunHandle;
+    expectedGeneration: number; journal: AuthJournalPort; handle: RunHandle;
     intent: OperationIntent;
     /** Injected clock returning absolute Unix epoch milliseconds, sampled again before dispatch. */
     nowMs: () => number;
@@ -175,7 +178,7 @@ export class SyntheticAuthStateAdapter {
     } finally { this.busy = false; }
   }
   async refresh(options: {
-    expectedGeneration: number; journal: SingleWriterJournal; handle: RunHandle;
+    expectedGeneration: number; journal: AuthJournalPort; handle: RunHandle;
     operationId: string; requestDigest: string;
     exchange: (tokens: SyntheticTokens) => Promise<SyntheticRefreshResponse>;
   }): Promise<EffectReceipt> {
