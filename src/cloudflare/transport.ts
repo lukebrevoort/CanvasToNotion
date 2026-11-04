@@ -25,6 +25,8 @@ export interface SyntheticTransportOptions {
   requestBudget: number;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /** Whole logical operation budget starts at construction, including idle time. */
+  operationTimeoutMs?: number;
 }
 const failure = (code: TransportErrorCode, kind: OperationKind | null = null, status?: number) => new SyntheticTransportError(code, kind, status);
 
@@ -34,6 +36,7 @@ export class SyntheticJsonTransport {
   private readonly budget: number;
   private readonly timeout: number;
   private readonly limit: number;
+  private readonly operationDeadline: number;
   private used = 0;
   private active = 0;
   private uncertain = false;
@@ -44,10 +47,19 @@ export class SyntheticJsonTransport {
     const timeout = options.timeoutMs ?? 25_000, limit = options.maxResponseBytes ?? 65_536;
     if (options.syntheticOnly !== true || !["https://canvas.invalid", "https://notion.invalid"].includes(options.origin) ||
         typeof options.fetch !== "function" || !Number.isSafeInteger(options.requestBudget) || options.requestBudget < 1 || options.requestBudget > 50 ||
-        !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 25_000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1_048_576) throw failure("invalid");
+        !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 25_000 ||
+        (options.operationTimeoutMs !== undefined && (!Number.isSafeInteger(options.operationTimeoutMs) || options.operationTimeoutMs < 1 || options.operationTimeoutMs > 300_000)) || !Number.isSafeInteger(limit) || limit < 1 || limit > 1_048_576) throw failure("invalid");
     this.origin = options.origin; this.fetchPort = options.fetch; this.budget = options.requestBudget; this.timeout = timeout; this.limit = limit;
+    this.operationDeadline = options.operationTimeoutMs === undefined ? Infinity : performance.now() + options.operationTimeoutMs;
   }
   state() { return { used: this.used, active: this.active, uncertain: this.uncertain, lastOperationKind: this.lastOperationKind }; }
+  /** Check immediately before accepting a logical-operation receipt. This does
+   * not prove provider state or seal the transport; the trusted owner must stop. */
+  assertOperationComplete(): void {
+    if (this.uncertain) throw failure("uncertain");
+    if (this.active) throw failure("busy");
+    if (performance.now() >= this.operationDeadline) throw failure("timeout");
+  }
   /** No timeout/cancellation fiction here. Can remain pending indefinitely. */
   async settleStartedRequests(): Promise<void> {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
@@ -59,6 +71,7 @@ export class SyntheticJsonTransport {
   async requestDetailed(request: SyntheticJsonRequest): Promise<{ json: unknown; link: string | null }> {
     if (this.uncertain) throw failure("uncertain");
     if (this.active) throw failure("busy");
+    if (performance.now() >= this.operationDeadline) throw failure("timeout");
     let url: URL;
     try { url = new URL(request.url); } catch { throw failure("invalid"); }
     const method = request.method ?? "GET";
@@ -85,7 +98,7 @@ export class SyntheticJsonTransport {
     let cancellation: Promise<void> | undefined;
     let completedBody = false;
     let dispatched = false;
-    const deadline = performance.now() + this.timeout;
+    const deadline = Math.min(performance.now() + this.timeout, this.operationDeadline);
     let abortCode: "timeout" | "aborted" | undefined;
     let rejectAbort!: (error: SyntheticTransportError) => void;
     const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
@@ -106,7 +119,7 @@ export class SyntheticJsonTransport {
     };
     const callerAbort = () => abort("aborted");
     signal?.addEventListener("abort", callerAbort, { once: true });
-    const timer = setTimeout(() => abort("timeout"), this.timeout);
+    const timer = setTimeout(() => abort("timeout"), Math.max(0, deadline - performance.now()));
     this.active = 1; this.lastOperationKind = kind;
     const work = Promise.resolve().then(async () => {
       try {

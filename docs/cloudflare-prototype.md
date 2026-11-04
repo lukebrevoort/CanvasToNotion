@@ -214,7 +214,34 @@ failed mirror acknowledgments remain blocked with evidence retained.
 `canvas-storage.ts` persists reading admission before a page request and commits
 normalized items and the next cursor atomically. Stale snapshots, unresolved
 reading and unknown durability block another request. Endpoint completion does
-not advance a global Canvas sync watermark. Production still needs the canonical
-store schema, complete course/source traversal and projection-aware watermark
-logic; the simplified synthetic mirror must not replace existing production
-history or subtly change Do Not Sync semantics.
+not advance a global Canvas sync watermark. The canonical store is now extracted without changing its observation algorithms,
+and `canonical-sql.ts` passes native/workerd parity for its six tables, rollback
+and restart. The simplified synthetic mirror must not replace existing history
+or subtly change Do Not Sync semantics. Real import and aggregate terminal
+watermark publication still need integration and verification.
+
+
+## Canonical source and planning increment
+
+`canonical-cycle.ts` persists a bounded dummy source traversal across every
+step/restart, including courses, time zones, group weights, assignment pages and
+validated fallback submissions. It holds the previous successful START watermark
+fixed, commits canonical observations with their checkpoints and ends only at
+`source_complete`, leaving the canonical run running. Its explicit retry is
+GET-only with stale-response fencing, not permission to reset mutation journals.
+Known settled fallback HTTP failures become null submissions; unknown or invalid
+responses remain blocked rather than silently erasing submission data.
+
+`canonical-plan.ts` derives up to twenty effects from current canonical pending
+records and captured projection context. Locally issued immutable plans support
+whole-plan preflight and per-operation revalidation. Attempted/deferred IDs are
+trusted cycle input, not proof of outcomes. The planner bounds effects, not its
+underlying pending scans, and cannot authorize a final successful watermark.
+
+The transport optionally enforces a whole-operation deadline, including idle
+time between requests, and rejects terminal acceptance while requests remain
+active/uncertain or that deadline has expired. This is not cancellation proof.
+
+See [canonical integration contract](cloudflare-canonical-integration.md) and
+[cutover checklist](cloudflare-cutover-checklist.md) for the remaining trusted
+execution, acknowledgment, recurring-cycle and production boundaries.

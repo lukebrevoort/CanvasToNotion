@@ -130,3 +130,34 @@ test("oversized Link header refuses and cancels body without exposing it", async
   let calls=0;const c=new SyntheticJsonTransport({syntheticOnly:true,origin:"https://canvas.invalid",requestBudget:1,fetch:async()=>{calls++;return Response.json({});}});
   await assert.rejects(c.request({url:"https://canvas.invalid/dummy",notionVersion:"2025-09-03"}));assert.equal(calls,0);
  });
+
+test("whole-operation deadline includes time between requests and prevents a late receipt", async () => {
+  let calls = 0;
+  const t = new SyntheticJsonTransport({ syntheticOnly: true, origin: "https://notion.invalid", requestBudget: 3, operationTimeoutMs: 80,
+    fetch: async () => { calls++; return new Response('{}'); } });
+  await t.request({ url }); t.assertOperationComplete();
+  await delay(100);
+  await assert.rejects(t.request({ url }), code("timeout"));
+  assert.throws(() => t.assertOperationComplete(), code("timeout"));
+  assert.equal(calls, 1); assert.equal(t.state().uncertain, false);
+});
+
+test("whole-operation deadline caps a longer per-request timeout and retains unsettled work", async () => {
+  const response = deferred<Response>();
+  const t = new SyntheticJsonTransport({ syntheticOnly: true, origin: "https://notion.invalid", requestBudget: 3, timeoutMs: 1000, operationTimeoutMs: 30,
+    fetch: async () => response.promise });
+  const work = t.request({ url, method: "PATCH", json: { dummy: true } });
+  assert.throws(() => t.assertOperationComplete(), code("busy"));
+  await assert.rejects(work, code("timeout", "write"));
+  assert.equal(t.state().active, 1); assert.equal(t.state().uncertain, true);
+  assert.throws(() => t.assertOperationComplete(), code("uncertain"));
+  response.resolve(new Response('{}')); await t.settleStartedRequests();
+  assert.equal(t.state().active, 0); assert.throws(() => t.assertOperationComplete(), code("uncertain"));
+});
+
+test("whole-operation duration rejects invalid values instead of silently extending validity", () => {
+  for (const operationTimeoutMs of [0, -1, 300001, 1.5, NaN, Infinity]) {
+    assert.throws(() => new SyntheticJsonTransport({ syntheticOnly: true, origin: "https://notion.invalid", requestBudget: 1, operationTimeoutMs,
+      fetch: async () => new Response('{}') }), code("invalid"));
+  }
+});
