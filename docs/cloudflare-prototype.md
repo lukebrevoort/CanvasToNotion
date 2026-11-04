@@ -22,6 +22,22 @@ binding, production database import or live Canvas/Notion transport here.
   loading/rendering the pure projector. The fixture has dummy identifiers only;
   every outbound fetch is intercepted, rejected and counted (expected count zero).
 
+- `mirror-import.ts` validates a bounded synthetic-only interchange document and
+  atomically stores it without overwriting existing data. Pending or unresolved
+  inputs and non-pristine journals are rejected. Notes, historical Activity and
+  user flags are preserved as supplied. This is not a production SQLite importer.
+- `batches.ts` runs one explicit offline batch at a time. Its checkpoint is tied
+  to a contiguous terminal receipt history and the exact full ordered plan.
+  Only completed batches can continue after runtime restart. Budgets count fake
+  request-port calls, not real provider calls, redirects or retries.
+- `auth-state.ts` encrypts dummy tokens with AES-GCM bound to scope/version and
+  generation. Refresh is journaled, uses CAS and retains the old refresh token
+  when the synthetic response omits one. Unknown responses or durability block
+  further refresh. There is no public token-read/header-generation interface.
+- Expanded local runtime checks persist the synthetic mirror and encrypted auth
+  state, resume between completed batches, preserve omitted refresh tokens, and
+  refuse lost-receipt batch/auth retries across restarts. No provider calls occur.
+
 ## Tests
 
 Run `npm run typecheck` and `node --import tsx --test test/*.test.ts`.
@@ -45,15 +61,27 @@ stopped or reconstructed object is not proof a remote request was cancelled.
 Generation checks cannot fence a process that still holds direct provider
 credentials outside this journal.
 
+### Cross-component boundary
+
+These are separate prototype components, not an integrated sync admission path.
+Their storage ports have separate queues and local failure latches. A production
+coordinator must serialize import, journal and auth admission, and persist an
+aggregate readiness/uncertainty gate before any provider work. Observing a mirror
+row after a lost import receipt does not establish migration readiness. Auth
+persistence precedes journal acknowledgment; a crash between those commits leaves
+that journal blocked even if the auth row says ready. Do not use auth state with a
+replacement journal or treat its ready status as permission to use credentials.
+Fixture keys and token strings are public dummy values, never provisioning advice.
+
 ## Next implementation gates
 
-1. Add the canonical mirror adapter and a verified import/export format,
+1. Integrate a canonical mirror adapter and verified production import/export format,
    preserving pending revisions, snapshots, watermarks and existing Notion IDs.
-2. Implement bounded projection steps with a conservative request budget. Free
+2. Connect bounded batches to actual projection and a transport-enforced request budget. Free
    Workers allow 50 subrequests per invocation; the current full pipeline cannot
    be moved wholesale into one free invocation. Persist completion between
    batches, and never resume an uncertain external effect automatically.
-3. Add one serialized Canvas refresh owner and durable encrypted credential
+3. Connect the synthetic auth protocol to one serialized Canvas refresh owner and real encrypted credential
    versions. Canvas documents renewed access tokens with the original refresh
    token reused; do not assume a single-use refresh token. Unknown refresh
    outcomes still need explicit recovery. No secrets belong in fixtures or logs.
@@ -78,3 +106,5 @@ credentials outside this journal.
 The free tier is a target to measure, not a cost guarantee. Alarms can retry and
 objects can restart; persistent admission must guard both. Do not put a long
 network operation inside `blockConcurrencyWhile` as a substitute for the journal.
+
+- [Workers Web Crypto and AES-GCM](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)
